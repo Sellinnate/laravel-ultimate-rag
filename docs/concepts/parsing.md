@@ -46,21 +46,35 @@ $parsed->language;   // detected language (filled in during preprocessing)
 | JSON | `application/json` | Flattened to readable `path: value` lines. |
 | DOCX | `application/vnd…wordprocessingml…` | Word files, read via PHP's `ZipArchive` — no external tools. |
 | PDF | `application/pdf` | Text-based PDFs, via the optional `smalot/pdfparser` package. |
+| Images | `image/png`, `image/jpeg`, `image/webp`, `image/tiff` | Read by the configured **OCR** engine. Unsupported while OCR is `null` (the default). See [Images & OCR](#images-ocr). |
 
 ::: callout tip "PDFs are text, not images"
 A PDF parser extracts the *text layer* of a PDF. A **scanned** document (an image
 of text) has no text layer — for those, enable **OCR** (below).
 :::
 
-## Scanned PDFs & OCR
+## Scanned PDFs, images & OCR {#images-ocr}
 
-When a PDF yields little or no extractable text (a scan), the parser can fall
-back to **OCR**. OCR is a pluggable engine, off by default:
+**OCR** (optical character recognition) reads text from pictures. The engine
+uses it in two places:
+
+- **Scanned PDFs.** When a PDF yields little or no extractable text, the PDF
+  parser falls back to OCR.
+- **Images.** A PNG, JPEG, WebP or TIFF upload (via `Rag::source()->file()` /
+  `storage()`, or an Eloquent `addFile()` field) is parsed by sending it to the
+  OCR engine.
+
+OCR is a pluggable engine, off by default:
 
 | Driver (`RAG_OCR`) | What it does |
 |---|---|
-| `null` (default) | No OCR — scanned PDFs parse to empty. |
-| `tesseract` | Shells out to the Tesseract binary (and `pdftoppm` to rasterise PDF pages). |
+| `null` (default) | No OCR. Scanned PDFs parse to empty, and **images are unsupported**: the pipeline marks the document `failed` (`ParsingException`), and an Eloquent file field follows `eloquent.on_unparsable_file` (skip or fail), the same as before images were supported. |
+| `tesseract` | Shells out to the Tesseract binary (and `pdftoppm` to rasterise PDF pages). Supports PNG/JPEG/WebP/TIFF (plus BMP/GIF). |
+| *your own* | Any engine registered with `OcrManager::extend()`, e.g. a vision LLM. See below. |
+
+An image is only claimed by the image parser if the OCR engine's `supports()`
+returns `true` for its MIME type. If OCR returns no text, the image is treated as
+**unparsable**, just like a corrupt file.
 
 Enable it:
 
@@ -76,11 +90,68 @@ How the fallback works: after extracting the text layer, if its length is below
 that text instead (marking `metadata.ocr = true`). Text PDFs are unaffected — OCR
 only kicks in when there's nothing to extract.
 
-::: callout info "Bring your own OCR engine"
-Implement the `Sellinnate\RagEngine\Contracts\Ocr` contract and register it via
-`OcrManager::extend()` to use a cloud OCR (AWS Textract, Google Vision, Azure) —
-same seam, no parser changes. See **[Custom drivers](/guides/custom-drivers)**.
-:::
+### Bring your own OCR engine {#custom-ocr}
+
+Implement the `Sellinnate\RagEngine\Contracts\Ocr` contract and register it with
+`OcrManager::extend()` to use a cloud OCR (AWS Textract, Google Vision, a
+vision-capable LLM…). It works through the same interface, with no parser changes.
+
+```php
+use Sellinnate\RagEngine\Contracts\Ocr;
+
+final class VisionLlmOcr implements Ocr
+{
+    public function __construct(private readonly string $model) {}
+
+    public function ocr(string $contents, string $mimeType): string
+    {
+        // Send the bytes to your vision API and return the transcribed text
+        // ('' when nothing could be read).
+        return MyVisionClient::transcribe($contents, $mimeType, $this->model);
+    }
+
+    public function supports(string $mimeType): bool
+    {
+        return in_array($mimeType, ['image/png', 'image/jpeg', 'image/webp', 'application/pdf'], true);
+    }
+
+    public function name(): string
+    {
+        return 'vision-llm';
+    }
+}
+```
+
+Register it in a service provider's `boot()` method, **before** anything parses:
+
+```php
+use Sellinnate\RagEngine\Managers\OcrManager;
+
+public function boot(): void
+{
+    $this->app->make(OcrManager::class)->extend('vision-llm', function (array $config, string $name) {
+        return new VisionLlmOcr(model: $config['model']);
+    });
+}
+```
+
+Then add a named block to `config/rag-engine.php` and select it:
+
+```php
+// config/rag-engine.php
+'ocr' => [
+    'null' => ['driver' => 'null'],
+    // ...
+    'vision' => ['driver' => 'vision-llm', 'model' => env('APP_OCR_MODEL')],
+],
+```
+
+```dotenv
+RAG_OCR=vision
+```
+
+The callback receives the block's config array and its name (`vision`). See
+**[Custom drivers](/guides/custom-drivers)** for the general pattern.
 
 ## Structure is preserved, not flattened
 
@@ -128,7 +199,10 @@ Full walkthrough: **[Custom drivers](/guides/custom-drivers)**.
 
 - **Send the correct MIME type** when ingesting from raw bytes, so the right
   parser is chosen.
-- **OCR scanned PDFs** to text before ingesting them.
+- **Enable an OCR engine** if you ingest scanned PDFs or images; otherwise they
+  contribute no text (or fail as unsupported).
+- **Treat OCR output as untrusted text.** Text read from an image goes through
+  the same PII redaction and prompt-injection fencing as any other content.
 - **Cap upload sizes** in your app, in addition to the engine's built-in limits.
 
 ## Next

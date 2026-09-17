@@ -48,16 +48,25 @@ final class Ingestor
         }
 
         $hash = $source->contentHash();
+        $documentKey = $this->explicitDocumentKey($source);
 
-        // Deduplication / idempotent re-ingestion (FR-IN-06).
-        $duplicate = Document::query()
+        // Deduplication / idempotent re-ingestion (FR-IN-06). A source carrying an
+        // explicit `document_key` (e.g. an Eloquent model) only dedupes against
+        // its own logical document, so two records with identical text stay two
+        // separately-scoped documents.
+        $duplicateQuery = Document::query()
             ->where('tenant_id', $tenantId)
             ->where('content_hash', $hash)
-            ->whereNull('soft_deleted_at')
-            ->first();
+            ->whereNull('soft_deleted_at');
+
+        if ($documentKey !== null) {
+            $duplicateQuery->where('metadata->document_key', $documentKey);
+        }
+
+        $duplicate = $duplicateQuery->first();
 
         if ($duplicate instanceof Document) {
-            return $duplicate;
+            return $this->refreshDuplicate($duplicate, $source, $metadata, $documentKey !== null);
         }
 
         try {
@@ -94,6 +103,7 @@ final class Ingestor
                 ->where('tenant_id', $tenantId)
                 ->where('content_hash', $hash)
                 ->whereNull('soft_deleted_at')
+                ->when($documentKey !== null, fn ($query) => $query->where('metadata->document_key', $documentKey))
                 ->orderByDesc('version')
                 ->first();
 
@@ -174,6 +184,90 @@ final class Ingestor
             // now-deleted row — identify it by the document, not the shared KEK.
             event(new DataShredded($documentId, $tenantId, 'document'));
         }
+    }
+
+    /**
+     * Keep an unchanged-content document in step with its incoming metadata.
+     *
+     * - A keyed duplicate (same logical document) takes the incoming metadata
+     *   (provenance is kept).
+     * - An un-keyed duplicate only takes an explicitly supplied, different
+     *   `rag_vector_metadata` (last writer wins); other metadata is untouched.
+     *
+     * When the metadata propagated into vector payloads changed, the document is
+     * flagged `pending` so the caller re-processes it and no vector keeps stale
+     * (e.g. access-control) metadata.
+     *
+     * @param  array<string, mixed>  $metadata
+     */
+    private function refreshDuplicate(Document $document, IngestionSource $source, array $metadata, bool $keyed): Document
+    {
+        $current = $document->metadata ?? [];
+        $incoming = [...$source->metadata, ...$metadata];
+
+        if (! $keyed && ! array_key_exists('rag_vector_metadata', $incoming)) {
+            return $document;
+        }
+
+        $vectorChanged = array_key_exists('rag_vector_metadata', $incoming)
+            && self::canonical($current['rag_vector_metadata'] ?? []) !== self::canonical($incoming['rag_vector_metadata']);
+
+        if ($keyed) {
+            // The logical document's latest declaration is authoritative (keys
+            // it no longer declares are dropped). Provenance describes the
+            // stored bytes, which did not change.
+            $updated = $incoming;
+            unset($updated['provenance']);
+            if (array_key_exists('provenance', $current)) {
+                $updated['provenance'] = $current['provenance'];
+            }
+        } else {
+            $updated = [...$current, 'rag_vector_metadata' => $incoming['rag_vector_metadata']];
+        }
+
+        if (self::canonical($updated) === self::canonical($current)) {
+            return $document;
+        }
+
+        $attributes = ['metadata' => $updated];
+
+        if ($vectorChanged && $document->status === 'indexed') {
+            $attributes['status'] = 'pending';
+        }
+
+        $document->forceFill($attributes)->save();
+
+        return $document;
+    }
+
+    private function explicitDocumentKey(IngestionSource $source): ?string
+    {
+        $key = $source->metadata['document_key'] ?? null;
+
+        return is_string($key) && $key !== '' ? $key : null;
+    }
+
+    /**
+     * Order-insensitive (for maps) representation used to compare metadata.
+     */
+    private static function canonical(mixed $value): string
+    {
+        return json_encode(self::sortRecursive($value), JSON_THROW_ON_ERROR);
+    }
+
+    private static function sortRecursive(mixed $value): mixed
+    {
+        if (! is_array($value)) {
+            return $value;
+        }
+
+        $value = array_map(self::sortRecursive(...), $value);
+
+        if (! array_is_list($value)) {
+            ksort($value);
+        }
+
+        return $value;
     }
 
     private function resolveVersion(IngestionSource $source, string $tenantId, string $hash): int

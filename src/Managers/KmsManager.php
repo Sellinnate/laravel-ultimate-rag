@@ -5,12 +5,15 @@ declare(strict_types=1);
 namespace Sellinnate\RagEngine\Managers;
 
 use Aws\Kms\KmsClient;
+use Illuminate\Database\ConnectionResolverInterface;
 use Sellinnate\RagEngine\Contracts\KeyManagement;
 use Sellinnate\RagEngine\Exceptions\RagException;
 use Sellinnate\RagEngine\Security\AeadCipher;
 use Sellinnate\RagEngine\Security\Kms\ArrayKeyStore;
 use Sellinnate\RagEngine\Security\Kms\AwsKms;
+use Sellinnate\RagEngine\Security\Kms\DatabaseKeyStore;
 use Sellinnate\RagEngine\Security\Kms\FileKeyStore;
+use Sellinnate\RagEngine\Security\Kms\KeyStore;
 use Sellinnate\RagEngine\Security\Kms\LocalKms;
 
 /**
@@ -40,11 +43,39 @@ final class KmsManager extends DriverManager
     {
         $cipher = new AeadCipher((string) $this->app->make('config')->get('rag-engine.security.cipher', 'aes-256-gcm'));
 
-        $store = ($config['store'] ?? 'array') === 'file' && isset($config['keystore'])
-            ? new FileKeyStore((string) $config['keystore'], $cipher, $config['master_key'] ?? null)
-            : new ArrayKeyStore;
+        return new LocalKms($this->createKeyStore($config, $cipher), $cipher);
+    }
 
-        return new LocalKms($store, $cipher);
+    /**
+     * The local driver's KEK store: `array` (in-memory), `file` (single node)
+     * or `database` (shared, multi-node). Unknown values fail closed.
+     *
+     * @param  array<string, mixed>  $config
+     */
+    private function createKeyStore(array $config, AeadCipher $cipher): KeyStore
+    {
+        $store = $config['store'] ?? 'array';
+        $masterKey = isset($config['master_key']) && is_string($config['master_key']) && $config['master_key'] !== ''
+            ? $config['master_key']
+            : null;
+
+        return match ($store) {
+            'array', '' => new ArrayKeyStore,
+            'file' => isset($config['keystore']) && is_string($config['keystore']) && $config['keystore'] !== ''
+                ? new FileKeyStore($config['keystore'], $cipher, $masterKey)
+                : throw new RagException('The file KMS key store requires rag-engine.kms.local.keystore (RAG_KMS_KEYSTORE).'),
+            'database' => new DatabaseKeyStore(
+                $this->app->make(ConnectionResolverInterface::class),
+                $cipher,
+                $masterKey,
+                connection: isset($config['connection']) && is_string($config['connection']) && $config['connection'] !== '' ? $config['connection'] : null,
+                table: (string) $this->app->make('config')->get('rag-engine.tables.kms_keys', 'rag_kms_keys'),
+            ),
+            default => throw new RagException(sprintf(
+                'Unsupported local KMS key store [%s]; use array, file or database.',
+                is_scalar($store) ? (string) $store : get_debug_type($store),
+            )),
+        };
     }
 
     /**

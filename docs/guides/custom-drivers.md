@@ -118,6 +118,7 @@ it per-call instead with `Rag::embed($texts, 'acme')`.
 | `KmsManager` | `KeyManagement` | key-management service |
 | `ChunkerManager` | `Chunker` | chunking strategy |
 | `TokenizerManager` | `Tokenizer` | token counter |
+| `OcrManager` | `Ocr` | OCR engine for scanned PDFs and images ([example](/concepts/parsing#custom-ocr)) |
 
 Method signatures for each contract are in the
 **[Contracts reference](/reference/contracts)**.

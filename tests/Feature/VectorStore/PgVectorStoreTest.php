@@ -6,7 +6,10 @@ use Illuminate\Database\ConnectionResolverInterface;
 use Sellinnate\RagEngine\Data\RetrievalQuery;
 use Sellinnate\RagEngine\Data\VectorRecord;
 use Sellinnate\RagEngine\Exceptions\RagException;
+use Sellinnate\RagEngine\Facades\Rag;
 use Sellinnate\RagEngine\Managers\VectorStoreManager;
+use Sellinnate\RagEngine\Pipeline\IngestionPipeline;
+use Sellinnate\RagEngine\VectorStore\InMemoryVectorStore;
 use Sellinnate\RagEngine\VectorStore\PgVectorStore;
 
 /**
@@ -19,7 +22,21 @@ function pgvectorConfigured(): bool
     return extension_loaded('pdo_pgsql') && getenv('RAG_PGVECTOR_TEST') === '1';
 }
 
-function pgStore(): PgVectorStore
+function pgStore(int $dimensions = 3, string $index = 'hnsw'): PgVectorStore
+{
+    configurePgConnection();
+
+    return new PgVectorStore(
+        app(ConnectionResolverInterface::class),
+        connection: 'pgvector_test',
+        table: 'rag_pgvectors_test',
+        dimensions: $dimensions,
+        metric: 'cosine',
+        index: $index,
+    );
+}
+
+function configurePgConnection(): void
 {
     config()->set('database.connections.pgvector_test', [
         'driver' => 'pgsql',
@@ -33,14 +50,6 @@ function pgStore(): PgVectorStore
         'search_path' => 'public',
         'sslmode' => 'prefer',
     ]);
-
-    return new PgVectorStore(
-        app(ConnectionResolverInterface::class),
-        connection: 'pgvector_test',
-        table: 'rag_pgvectors_test',
-        dimensions: 3,
-        metric: 'cosine',
-    );
 }
 
 it('resolves the pgvector driver to PgVectorStore (no DB needed)', function () {
@@ -111,6 +120,171 @@ describe('native pgvector (requires Postgres + vector extension)', function () {
 
         $this->store->deleteByFilter('docs', ['tenant_id' => 't1']);
         expect($this->store->count('docs'))->toBe(0);
+    });
+
+    it('returns topK hits for a selective filter (filters run before LIMIT)', function () {
+        // 200 near vectors in the wrong scope, 5 far ones in the right scope.
+        $records = [];
+        for ($i = 0; $i < 200; $i++) {
+            $records[] = new VectorRecord("noise-{$i}", [1.0, 0.001 * $i, 0.0], ['tenant_id' => 't1', 'scope' => 'internal']);
+        }
+        for ($i = 0; $i < 5; $i++) {
+            $records[] = new VectorRecord("contract-{$i}", [0.0, 0.1 * $i, 1.0], ['tenant_id' => 't1', 'scope' => 'contracts']);
+        }
+        $this->store->upsert('docs', $records);
+
+        $hits = $this->store->search('docs', [1.0, 0.0, 0.0], new RetrievalQuery('q', topK: 5, filters: ['scope' => ['in' => ['contracts', 'board']]], tenantId: 't1'));
+
+        expect($hits)->toHaveCount(5);
+        foreach ($hits as $hit) {
+            expect($hit->metadata['scope'])->toBe('contracts');
+        }
+    });
+
+    it('returns topK filtered hits through the HNSW index', function () {
+        $records = [];
+        for ($i = 0; $i < 300; $i++) {
+            $records[] = new VectorRecord("n-{$i}", [1.0, sin($i), cos($i)], ['tenant_id' => 't1', 'scope' => $i % 50 === 0 ? 'rare' : 'common']);
+        }
+        $this->store->upsert('docs', $records);
+
+        $conn = app(ConnectionResolverInterface::class)->connection('pgvector_test');
+        $conn->statement('ANALYZE rag_pgvectors_test');
+        $conn->statement('SET enable_seqscan = off');
+
+        try {
+            $hits = $this->store->search('docs', [1.0, 0.0, 0.0], new RetrievalQuery('q', topK: 6, filters: ['scope' => 'rare'], tenantId: 't1'));
+        } finally {
+            $conn->statement('SET enable_seqscan = on');
+        }
+
+        expect($hits)->toHaveCount(6);
+    });
+
+    it('pushes every operator down with the same semantics as the PHP matcher', function () {
+        $this->store->upsert('docs', [
+            new VectorRecord('a', [1.0, 0.0, 0.0], ['tenant_id' => 't1', 'year' => 2023, 'score' => 1.5, 'tag' => 'x', 'date' => '2024-01-10', 'flag' => true, 'tags' => ['p', 'q']]),
+            new VectorRecord('b', [1.0, 0.1, 0.0], ['tenant_id' => 't1', 'year' => 2024, 'score' => 2.5, 'tag' => 'y', 'date' => '2024-03-01', 'flag' => false]),
+            new VectorRecord('c', [1.0, 0.2, 0.0], ['tenant_id' => 't1', 'year' => '2025', 'tag' => null, 'num' => '1']),
+            new VectorRecord('d', [1.0, 0.3, 0.0], ['tenant_id' => 't1', 'num' => 1]),
+        ]);
+
+        $ids = function (array $filters): array {
+            $hits = $this->store->search('docs', [1.0, 0.0, 0.0], new RetrievalQuery('q', topK: 10, filters: $filters, tenantId: 't1'));
+            $ids = array_map(static fn ($h) => $h->id, $hits);
+            sort($ids);
+
+            return $ids;
+        };
+
+        expect($ids(['tag' => 'x']))->toBe(['a'])
+            ->and($ids(['tag' => null]))->toBe(['c', 'd'])
+            ->and($ids(['tag' => ['x', null]]))->toBe(['a', 'c', 'd'])
+            ->and($ids(['tag' => []]))->toBe([])
+            ->and($ids(['flag' => true]))->toBe(['a'])
+            ->and($ids(['flag' => false]))->toBe(['b'])
+            ->and($ids(['num' => 1]))->toBe(['d'])
+            ->and($ids(['num' => '1']))->toBe(['c'])
+            ->and($ids(['tags' => ['eq' => ['p', 'q']]]))->toBe(['a'])
+            ->and($ids(['year' => ['gte' => 2024]]))->toBe(['b'])
+            ->and($ids(['year' => ['gt' => 2022, 'lt' => 2024]]))->toBe(['a'])
+            ->and($ids(['score' => ['lte' => 2.0]]))->toBe(['a'])
+            ->and($ids(['date' => ['gte' => '2024-02-01']]))->toBe(['b'])
+            ->and($ids(['year' => ['lt' => '2030']]))->toBe(['c'])
+            ->and($ids(['year' => ['gt' => true]]))->toBe([])
+            ->and($ids(['tag' => ['eq' => 'y']]))->toBe(['b'])
+            ->and($ids(['tag' => ['neq' => 'x']]))->toBe(['b', 'c', 'd'])
+            ->and($ids(['tag' => ['neq' => null]]))->toBe(['a', 'b'])
+            ->and($ids(['tag' => ['in' => ['x', 'y']]]))->toBe(['a', 'b'])
+            ->and($ids(['tag' => ['nin' => ['x']]]))->toBe(['b', 'c', 'd'])
+            ->and($ids(['tag' => ['nin' => ['x', null]]]))->toBe(['b'])
+            ->and($ids(['tag' => ['in' => 'x']]))->toBe([])
+            ->and($ids(['tag' => ['nin' => 'x']]))->toBe([]);
+
+        // The in-memory matcher agrees on every case above.
+        foreach ([['tag' => null], ['tag' => ['nin' => ['x', null]]], ['year' => ['gte' => 2024]], ['num' => '1']] as $filters) {
+            $memory = new InMemoryVectorStore;
+            $memory->createNamespace('docs', 3);
+            $memory->upsert('docs', [
+                new VectorRecord('a', [1.0, 0.0, 0.0], ['tenant_id' => 't1', 'year' => 2023, 'tag' => 'x']),
+                new VectorRecord('b', [1.0, 0.1, 0.0], ['tenant_id' => 't1', 'year' => 2024, 'tag' => 'y']),
+                new VectorRecord('c', [1.0, 0.2, 0.0], ['tenant_id' => 't1', 'year' => '2025', 'tag' => null, 'num' => '1']),
+                new VectorRecord('d', [1.0, 0.3, 0.0], ['tenant_id' => 't1', 'num' => 1]),
+            ]);
+            $memoryIds = array_map(static fn ($h) => $h->id, $memory->search('docs', [1.0, 0.0, 0.0], new RetrievalQuery('q', topK: 10, filters: $filters, tenantId: 't1')));
+            sort($memoryIds);
+
+            expect($memoryIds)->toBe($ids($filters));
+        }
+    });
+
+    it('treats hostile filter keys and values as data, never SQL', function () {
+        $this->store->upsert('docs', [new VectorRecord('a', [1.0, 0.0, 0.0], ['tenant_id' => 't1', 'tag' => "x'; DROP TABLE rag_pgvectors_test; --"])]);
+
+        $hits = $this->store->search('docs', [1.0, 0.0, 0.0], new RetrievalQuery('q', topK: 10, filters: ['tag' => "x'; DROP TABLE rag_pgvectors_test; --"], tenantId: 't1'));
+        expect($hits)->toHaveCount(1);
+
+        expect(fn () => $this->store->search('docs', [1.0, 0.0, 0.0], new RetrievalQuery('q', topK: 10, filters: ["tag') OR 1=1 --" => 'x'], tenantId: 't1')))
+            ->toThrow(RagException::class, 'Invalid metadata filter key');
+
+        expect($this->store->count('docs'))->toBe(1);
+    });
+
+    it('deletes by a metadata filter pushed into SQL', function () {
+        $this->store->upsert('docs', [
+            new VectorRecord('a', [1.0, 0.0, 0.0], ['tenant_id' => 't1', 'document_id' => 'd1']),
+            new VectorRecord('b', [1.0, 0.1, 0.0], ['tenant_id' => 't1', 'document_id' => 'd2']),
+        ]);
+
+        $this->store->deleteByFilter('docs', ['document_id' => 'd1']);
+
+        $left = $this->store->search('docs', [1.0, 0.0, 0.0], new RetrievalQuery('q', topK: 10, tenantId: 't1'));
+        expect($left)->toHaveCount(1)->and($left[0]->id)->toBe('b');
+    });
+
+    it('works with an ivfflat index too', function () {
+        app(ConnectionResolverInterface::class)->connection('pgvector_test')->statement('DROP TABLE IF EXISTS rag_pgvectors_test');
+        $store = pgStore(index: 'ivfflat');
+        $store->createNamespace('docs', 3, 'cosine');
+        $store->upsert('docs', [
+            new VectorRecord('a', [1.0, 0.0, 0.0], ['tenant_id' => 't1', 'scope' => 'x']),
+            new VectorRecord('b', [0.0, 1.0, 0.0], ['tenant_id' => 't1', 'scope' => 'y']),
+        ]);
+
+        $hits = $store->search('docs', [1.0, 0.0, 0.0], new RetrievalQuery('q', topK: 5, filters: ['scope' => 'y'], tenantId: 't1'));
+
+        expect($hits)->toHaveCount(1)->and($hits[0]->id)->toBe('b');
+    });
+
+    it('runs the full pipeline: scoped Eloquent-style metadata, no plaintext, hydrated hits', function () {
+        config()->set('rag-engine.defaults.vector_store', 'pgvector');
+        config()->set('rag-engine.vector_stores.pgvector', [
+            'driver' => 'pgvector',
+            'connection' => 'pgvector_test',
+            'table' => 'rag_pgvectors_test',
+            'dimensions' => 8,
+            'index' => 'hnsw',
+        ]);
+        app(ConnectionResolverInterface::class)->connection('pgvector_test')->statement('DROP TABLE IF EXISTS rag_pgvectors_test');
+        app(VectorStoreManager::class)->forgetDrivers();
+
+        foreach (['internal' => 'Internal holiday calendar.', 'contracts' => 'Supplier contract renewal terms.'] as $scope => $text) {
+            $document = Rag::ingest(Rag::source()->text($text, ['rag_vector_metadata' => ['scope' => $scope]]));
+            app(IngestionPipeline::class)->process($document);
+        }
+
+        $rows = app(ConnectionResolverInterface::class)->connection('pgvector_test')->select('SELECT metadata, content FROM rag_pgvectors_test');
+        expect($rows)->toHaveCount(2);
+        foreach ($rows as $row) {
+            expect($row->content)->toBe('')
+                ->and((string) $row->metadata)->not->toContain('contract renewal');
+        }
+
+        $hits = Rag::search('contract renewal')->where('scope', ['in' => ['contracts']])->topK(5)->get();
+
+        expect($hits)->toHaveCount(1)
+            ->and($hits[0]->content)->toContain('Supplier contract renewal')
+            ->and($hits[0]->metadata['scope'])->toBe('contracts');
     });
 
     it('upsert is idempotent on the id (ON CONFLICT)', function () {

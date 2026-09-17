@@ -4,7 +4,7 @@
 
 # RAG Engine for Laravel
 
-[![Tests](https://img.shields.io/badge/tests-429%20passing-brightgreen)]()
+[![Tests](https://img.shields.io/badge/tests-504%20passing-brightgreen)]()
 [![Coverage](https://img.shields.io/badge/coverage-%E2%89%A590%25-brightgreen)]()
 [![PHPStan](https://img.shields.io/badge/PHPStan-level%208-blue)]()
 [![PHP](https://img.shields.io/badge/PHP-8.2%2B-777bb4)]()
@@ -54,23 +54,26 @@ code, one config switch.
 
 - **Multi-format ingestion** — raw text, file uploads, URLs (SSRF-guarded), cloud
   storage and Eloquent records. Safely parses Markdown, HTML, XML, CSV, JSON,
-  DOCX and PDF.
+  DOCX and PDF, and images (PNG/JPEG/WebP/TIFF) through OCR.
 - **Pluggable everything** — parsing, chunking, embedding, vector store,
   reranking and LLM are swappable drivers behind stable contracts.
 - **10 embedding providers** — OpenAI, Azure OpenAI, Mistral, Jina, Voyage,
   Cohere, Gemini, Hugging Face, Ollama, plus a deterministic `fake` driver for
   tests.
-- **Powerful retrieval** — metadata filters, hybrid (semantic + keyword) search
+- **Powerful retrieval** — metadata filters (pushed into SQL on pgvector, usable
+  for access scopes), hybrid (semantic + keyword) search
   with RRF, MMR diversification, reranking, relevance thresholds and
   small-to-big (parent-child) context expansion.
 - **Embeddable Eloquent models** — make any model searchable via one contract;
-  recursive composition of relations, auto-sync on change, and vector→model
+  recursive composition of relations, auto-sync on change (including
+  metadata-only changes), filterable metadata on every vector, and vector→model
   trace-back.
 - **Security by design** — BYOK envelope encryption with a KMS abstraction
-  (`local` + **AWS KMS**), crypto-shredding for "right to erasure", and PII
-  redaction on by default.
-- **OCR for scanned PDFs** — pluggable OCR (Tesseract) kicks in when a PDF has no
-  text layer.
+  (`local` with an in-memory, file or multi-node **database** key store, plus
+  **AWS KMS**), no plaintext chunk text in the vector store when encryption is on,
+  crypto-shredding for "right to erasure", and PII redaction on by default.
+- **OCR for scanned PDFs and images** — pluggable OCR (Tesseract, or your own
+  engine via `OcrManager::extend()`) reads scans and image uploads.
 - **Quality evaluation** — measure recall@k, precision@k, hit-rate and MRR over a
   labelled dataset (`rag:evaluate`).
 - **Resilient providers** — LLM, reranker and embedder HTTP calls retry transient
@@ -144,7 +147,7 @@ Refine retrieval fluently:
 $hits = Rag::search('envelope encryption')
     ->topK(5)
     ->threshold(0.4)        // drop weak matches
-    ->where('tag', 'docs')  // metadata filter
+    ->where('scope', ['in' => ['docs', 'internal']])  // metadata filter
     ->hybrid()              // semantic + keyword (RRF)
     ->rerank()              // precision pass
     ->expandParents()       // small-to-big context
@@ -275,13 +278,15 @@ Anthropic is generation-only (no embeddings). Answers can be **streamed** with
 **Rerankers** (`RAG_RERANKER`, optional cross-encoder pass): `cohere` · `jina`
 (EU) · `null`/`fake`.
 
-**KMS** (`RAG_KMS`, BYOK key management): `local` (dev) · `aws` (AWS KMS,
-production).
+**KMS** (`RAG_KMS`, BYOK key management): `local` (key store
+`RAG_KMS_STORE=array|file|database`; `database` for multi-node hosting) · `aws`
+(AWS KMS, production).
 
-**OCR** (`RAG_OCR`, scanned-PDF fallback): `null` · `tesseract`.
+**OCR** (`RAG_OCR`, scanned PDFs and images): `null` · `tesseract` · your own via
+`OcrManager::extend()`.
 
 **Parsers**: plain text · Markdown · HTML · XML · CSV/TSV · JSON · DOCX · PDF
-(+ OCR for scans).
+(+ OCR for scans) · images PNG/JPEG/WebP/TIFF (via OCR).
 
 **Chunkers**: `recursive` (default) · `sentence` · `markdown` · `fixed`
 (char- or token-based), with optional parent-child and contextual headers.
@@ -293,14 +298,21 @@ you can register your own (see
 ## Security & multi-tenancy
 
 - **BYOK envelope encryption** — content is encrypted at rest with per-item DEKs
-  wrapped by a tenant KEK in a KMS; the plaintext key never persists.
+  wrapped by a tenant KEK in a KMS; the plaintext key never persists. With
+  encryption on, chunk text is **not** copied into the vector store
+  (`RAG_VECTOR_PAYLOAD_CONTENT`); search decrypts it from the database instead.
 - **Crypto-shredding** — honour "right to erasure" by destroying the key, making
   data unrecoverable everywhere (including DB backups) at once.
 - **PII redaction** — emails, cards (Luhn), IBANs (mod-97), Italian fiscal codes
   and phone numbers are redacted before indexing, by default.
 - **Fail-closed multi-tenancy** — every query is automatically scoped to the
   current tenant; scope can never be widened from a query (a tested invariant).
-- **Tamper-evident audit log** — append-only with database-level WORM triggers.
+- **Access scopes inside a tenant** — put a `scope` in the vector metadata
+  (`EmbeddableDefinition::metadata()` or `rag_vector_metadata`) and filter with
+  `->where('scope', ['in' => $allowed])`.
+- **Tamper-evident audit log** — append-only with database-level WORM triggers
+  (switch them off with `RAG_AUDIT_DB_TRIGGERS=false` on hosts that reject
+  `CREATE TRIGGER`; the model-level guard stays on).
 
 ```php
 use Sellinnate\RagEngine\Facades\Rag;
@@ -341,7 +353,7 @@ npm run docs:build   # static site into ./site
 ## Testing & development
 
 ```bash
-composer test         # run the Pest suite (429 tests)
+composer test         # run the Pest suite (504 tests)
 composer analyse      # PHPStan, level 8
 composer format       # Laravel Pint (code style)
 
@@ -349,7 +361,7 @@ composer format       # Laravel Pint (code style)
 XDEBUG_MODE=coverage vendor/bin/pest --coverage --min=90
 ```
 
-Quality gates kept green on every change: **429 tests**, **PHPStan level 8**,
+Quality gates kept green on every change: **504 tests**, **PHPStan level 8**,
 **Pint** clean, **≥90% coverage**.
 
 ## License

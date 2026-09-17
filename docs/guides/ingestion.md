@@ -74,6 +74,18 @@ $b = Rag::ingest(Rag::source()->text('hello'));
 $a->is($b);   // true — only one row exists
 ```
 
+Two refinements:
+
+- **A source with a `document_key` only matches its own document.** Two
+  different records with identical text (e.g. two Eloquent models) stay two
+  documents, each with its own metadata.
+- **Changed vector metadata is applied, not ignored.** If identical content is
+  ingested again with a different `rag_vector_metadata` (see below), the
+  existing document takes the new values and goes back to `pending`, so the next
+  `Rag::process()` rebuilds its vectors. Without a `document_key`, the last
+  writer wins. Give each separately-scoped copy its own `document_key` if you
+  need both.
+
 ## Versioning
 
 Give a source a stable **logical key** (`document_key`, or a filename/url) and
@@ -91,6 +103,37 @@ Without a key, two edits of the same logical document look like two unrelated
 documents. With a key, the engine versions them cleanly and supersedes the old
 generation. Use a stable identifier you control (a slug, a filename, a record id).
 :::
+
+## Filterable vector metadata {#vector-metadata}
+
+Document metadata (the second argument of every factory method) is stored on the
+`Document`. To make metadata **filterable at search time**, put it under the
+`rag_vector_metadata` key: every value in it is copied into every vector of the
+document.
+
+```php
+$document = Rag::ingest(Rag::source()->file($path, [
+    'document_key' => 'handbook/leave-policy',
+    'rag_vector_metadata' => [
+        'scope' => 'hr',             // who may see it
+        'year' => 2026,
+        'tags' => ['policy', 'leave'],
+    ],
+]));
+Rag::process($document);
+
+Rag::search('parental leave')->where('scope', ['in' => ['hr', 'internal']])->get();
+```
+
+- Use **scalars or lists of scalars**. Those are the values every vector store
+  can filter on.
+- System keys (`tenant_id`, `document_id`, `chunk_id`, `parent_chunk_id`,
+  `content`, `is_parent`) are ignored if you set them. The engine always writes
+  its own values.
+- To change the scope later, ingest the same content again with the new
+  `rag_vector_metadata` and process it (see above), or purge and re-ingest it.
+- Eloquent models get this automatically from `EmbeddableDefinition::metadata()`
+  (see **[Eloquent models](/concepts/eloquent-models#filterable-metadata)**).
 
 ## Provenance
 

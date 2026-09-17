@@ -56,12 +56,39 @@ This creates the engine's tables:
 | `rag_ingestion_runs` | A record of each processing run. |
 | `rag_usage_records` | Token/cost usage per tenant. |
 | `rag_audit_entries` / `rag_audit_anchors` | The tamper-evident audit log. |
+| `rag_shredded_tenants` | Tenants that were crypto-shredded (they can't be re-created). |
+| `rag_vectors` / `rag_vector_namespaces` | Vectors for the portable `database` vector store. |
+| `rag_kms_keys` | Encrypted tenant keys when `RAG_KMS_STORE=database` (own migration; created on `RAG_KMS_CONNECTION` if set). |
 
 ::: callout info "Why the audit table can't be edited"
 The audit log is **append-only**: database-level triggers reject any `UPDATE` or
 `DELETE` on it. That makes the security trail tamper-evident — see
 **[Security & BYOK](/concepts/security)**.
 :::
+
+::: callout warning "Managed MySQL that rejects CREATE TRIGGER"
+If `php artisan migrate` fails creating the audit triggers (no `SUPER`
+privilege / binary-logging restrictions), set `RAG_AUDIT_DB_TRIGGERS=false`
+before migrating. The model-level guard stays on. See
+**[Audit log triggers](/concepts/security#audit-triggers)**.
+:::
+
+### Upgrading an existing install {#upgrading}
+
+New package versions can add migrations. Publishing again only copies the **new**
+files (existing ones are skipped), so after `composer update` run:
+
+```bash
+php artisan vendor:publish --tag="rag-engine-migrations"
+php artisan migrate
+```
+
+v1.3 adds `create_rag_kms_keys_table`. Also compare your published
+`config/rag-engine.php` with the package's copy, to pick up new keys (such as
+`security.vector_payload_content`, `audit.db_triggers`, `kms.local.connection`
+and `tables.kms_keys`). The defaults apply even without them. Then run
+`php artisan rag:reindex {tenant}` for each tenant, which strips legacy
+plaintext from the vectors and adds filterable metadata to them.
 
 ## Step 3 — Verify the install
 

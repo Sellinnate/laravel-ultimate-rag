@@ -27,9 +27,21 @@ final class LocalKms implements KeyManagement
 
     public function createKey(string $keyId): void
     {
-        if (! $this->store->has($keyId)) {
-            $this->store->put($keyId, $this->encodeVersions([random_bytes(32)]));
+        if ($this->store->has($keyId)) {
+            return;
         }
+
+        $material = $this->encodeVersions([random_bytes(32)]);
+
+        // Shared stores create atomically so concurrent nodes can't clobber
+        // each other's freshly generated KEK.
+        if ($this->store instanceof AtomicKeyStore) {
+            $this->store->add($keyId, $material);
+
+            return;
+        }
+
+        $this->store->put($keyId, $material);
     }
 
     public function generateDataKey(string $keyId): GeneratedDataKey

@@ -57,6 +57,32 @@ Chain only what you need — each method returns the builder:
 | `->store('qdrant')` | Query a specific vector store. | Override the default backend. |
 | `->namespace('...')` | Search a specific namespace. | Advanced multi-namespace setups. |
 
+### Filtering on metadata {#filters}
+
+`where()` and `filter()` match against the metadata stored in each vector (see
+[Eloquent models](/concepts/eloquent-models#filterable-metadata) and
+[Ingesting content](/guides/ingestion#vector-metadata) for how to put it there).
+The same rules apply on every vector store:
+
+| Filter | Matches when… |
+|---|---|
+| `->where('scope', 'hr')` | the value is **exactly** `'hr'` (strict: `'1'` never equals `1`). |
+| `->where('scope', null)` | the key is missing or `null`. |
+| `->where('scope', ['hr', 'internal'])` | the value is one of the list. |
+| `->where('scope', ['in' => [...]])` / `['nin' => [...]]` | the value is / is not in the list (`nin` also matches a missing key). |
+| `->where('scope', ['eq' => 'hr'])` / `['neq' => 'hr']` | equal / not equal (`neq` also matches a missing key). |
+| `->where('year', ['gte' => 2024, 'lt' => 2026])` | range: **numbers with numbers, strings with strings**. Strings compare byte by byte, so ISO dates (`'2026-01-31'`) work. A missing key or a mismatched type never matches. |
+
+Several conditions (several `where()` calls, or one `filter([...])`) must **all**
+match. An unknown operator throws a `RagException`.
+
+::: callout tip "Access control with a scope filter"
+Store an access `scope` on every vector and always filter on the scopes the
+current user is allowed to see:
+`->where('scope', ['in' => $allowedScopes])`. The tenant boundary is enforced by
+the engine; scopes *inside* a tenant are yours to enforce, on every query.
+:::
+
 ### A fully-loaded example
 
 ```php

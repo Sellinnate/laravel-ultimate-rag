@@ -179,6 +179,28 @@ migration to run.
 ],
 ```
 
+### Filters run inside Postgres {#pgvector-filters}
+
+Metadata filters (`->where(...)`) are compiled to SQL on the `metadata` `jsonb`
+column and applied **before** `ORDER BY … LIMIT`, so a selective filter (e.g.
+an access `scope` that matches 1% of the vectors) still returns `topK` hits.
+Filter keys and values are always sent as bound parameters. Keys must match
+`[A-Za-z0-9_.:-]` (up to 128 characters), otherwise the query throws.
+
+An ANN index can still stop early when a filter is applied after it, so the
+engine also tunes the scan per query:
+
+- `hnsw.ef_search` is raised to cover the requested limit (up to pgvector's
+  maximum of 1000).
+- On **pgvector ≥ 0.8**, filtered queries use **iterative index scans**
+  (`hnsw.iterative_scan = strict_order`, or `relaxed_order` for ivfflat), which
+  keep reading the index until the limit is filled.
+- On **pgvector < 0.8**, which has no iterative scans, filtered queries use an
+  **exact scan** instead of the ANN index. Results are correct but slower on
+  large tables, so upgrade pgvector if you filter a big corpus.
+
+All settings use `SET LOCAL`, so they only affect that query's transaction.
+
 ::: callout tip "Which to pick on Postgres — database or pgvector?"
 Start with **`database`** if your corpus is small and you want zero setup. Move
 to **`pgvector`** when you have lots of vectors and want index-backed ANN, and
@@ -255,6 +277,11 @@ model), **re-index your corpus**:
   have an admin run `CREATE EXTENSION vector;` once, or use a superuser.
 - **`pgvector` dimension error** → `RAG_PGVECTOR_DIMENSIONS` doesn't match your
   embedder. Set it to the model's output size and re-index.
+- **`pgvector` "Invalid metadata filter key"** → a `where()` key contains
+  characters outside `[A-Za-z0-9_.:-]`. Rename the metadata key.
+- **The `content` column is empty** → expected with encryption on: chunk text is
+  kept encrypted in `rag_chunks` and decrypted at search time. See
+  **[Security → plaintext in the vector store](/concepts/security#vector-payload-content)**.
 - **`database` + a custom connection but "table not found"** → run the migrations
   on that connection (`php artisan migrate --database=...`).
 - **Switched store and search is empty** → you must re-index; vectors don't move

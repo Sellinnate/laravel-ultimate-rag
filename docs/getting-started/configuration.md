@@ -109,15 +109,41 @@ guide walks through it step by step.
 
 ```php
 'security' => [
-    'encryption_enabled'    => env('RAG_ENCRYPTION_ENABLED', true),  // envelope-encrypt content at rest
-    'cipher'                => 'aes-256-gcm',
-    'pii_redaction_enabled' => env('RAG_PII_REDACTION', true),       // strip personal data before indexing
-    'pii_strategy'          => env('RAG_PII_STRATEGY', 'mask'),       // 'mask' or 'tokenize'
+    'encryption_enabled'     => env('RAG_ENCRYPTION_ENABLED', true),  // envelope-encrypt content at rest
+    'vector_payload_content' => env('RAG_VECTOR_PAYLOAD_CONTENT'),    // null = plaintext in vectors only when encryption is off
+    'cipher'                 => 'aes-256-gcm',
+    'pii_redaction_enabled'  => env('RAG_PII_REDACTION', true),       // strip personal data before indexing
+    'pii_strategy'           => env('RAG_PII_STRATEGY', 'mask'),       // 'mask' or 'tokenize'
+],
+
+'audit' => [
+    'db_triggers' => env('RAG_AUDIT_DB_TRIGGERS', true), // false on hosts that reject CREATE TRIGGER
 ],
 ```
 
-Both encryption and PII redaction are **on by default**. See
-**[Security](/concepts/security)** and **[Preprocessing & PII](/concepts/preprocessing)**.
+Encryption and PII redaction are **on by default**, and with encryption on no
+chunk text is copied into the vector store. See
+**[Security](/concepts/security#vector-payload-content)**,
+**[Audit log triggers](/concepts/security#audit-triggers)** and
+**[Preprocessing & PII](/concepts/preprocessing)**.
+
+### Key management (local KMS)
+
+```php
+'kms' => [
+    'local' => [
+        'driver'     => 'local',
+        'store'      => env('RAG_KMS_STORE', 'array'),   // array | file | database
+        'master_key' => env('RAG_KMS_MASTER_KEY'),       // required for database (>= 32 chars)
+        'keystore'   => env('RAG_KMS_KEYSTORE', storage_path('rag-engine/kms')), // file store directory
+        'connection' => env('RAG_KMS_CONNECTION'),       // database store connection (null = default)
+    ],
+    // 'aws' => [...]
+],
+```
+
+Use `database` on multi-node or ephemeral-disk hosting. An unknown `store`
+value throws. See **[Local KMS key stores](/concepts/security#kms-key-stores)**.
 
 ### Multi-tenancy {#multi-tenancy}
 
@@ -179,6 +205,10 @@ See **[Chunking](/concepts/chunking)** for what each option does and how to pick
   **[Retrieval & search](/concepts/retrieval)**.
 - **Leave encryption and PII redaction on** unless you have a specific, reviewed
   reason not to.
+- **Never run the `array` KMS store in production.** Use `aws`, or
+  `RAG_KMS_STORE=database` with a secret `RAG_KMS_MASTER_KEY`.
+- **Filter every search on the scopes the user may see** if you store access
+  scopes in vector metadata (see [Retrieval → filters](/concepts/retrieval#filters)).
 - **Set per-tenant quotas** if you're multi-tenant, to cap runaway cost.
 - **Re-index after changing the embedding model** — vectors from different models
   aren't comparable.

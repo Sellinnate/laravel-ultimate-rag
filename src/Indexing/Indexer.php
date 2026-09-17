@@ -14,6 +14,7 @@ use Sellinnate\RagEngine\Data\VectorRecord;
 use Sellinnate\RagEngine\Embedding\EmbeddingService;
 use Sellinnate\RagEngine\Events\ChunksEmbedded;
 use Sellinnate\RagEngine\Events\DocumentIndexed;
+use Sellinnate\RagEngine\Exceptions\RagException;
 use Sellinnate\RagEngine\Managers\VectorStoreManager;
 use Sellinnate\RagEngine\Models\Chunk;
 use Sellinnate\RagEngine\Models\Document;
@@ -23,8 +24,12 @@ use Sellinnate\RagEngine\Security\EnvelopeEncrypter;
 /**
  * Persists chunks and indexes their vectors (bridges chunking → vector store).
  *
- * - Chunk text is envelope-encrypted at rest (FR-SEC-01); the plaintext lives in
- *   the vector store payload, which sits inside the tenant perimeter (FR-SEC-06).
+ * - Chunk text is envelope-encrypted at rest (FR-SEC-01). Whether the plaintext
+ *   is ALSO copied into the vector payload is governed by
+ *   `security.vector_payload_content` (default: only when encryption is off);
+ *   otherwise retrieval hydrates hit content from the encrypted chunk rows.
+ * - Filterable document metadata (`rag_vector_metadata`) is propagated into
+ *   every vector payload; system keys always win and can never be shadowed.
  * - Re-indexing a document atomically replaces its prior chunks/vectors (FR-AF-05,
  *   FR-IN-08).
  * - Parent chunks (parent-child) are persisted for context expansion but only
@@ -32,6 +37,12 @@ use Sellinnate\RagEngine\Security\EnvelopeEncrypter;
  */
 final class Indexer
 {
+    /**
+     * Payload keys owned by the engine. Caller/model metadata can never
+     * override them (tenant scoping, provenance and trace-back rely on them).
+     */
+    public const SYSTEM_KEYS = ['tenant_id', 'document_id', 'chunk_id', 'parent_chunk_id', 'content', 'is_parent'];
+
     public function __construct(
         private readonly EmbeddingService $embedding,
         private readonly VectorStoreManager $stores,
@@ -170,26 +181,37 @@ final class Indexer
             return [];
         }
 
-        $provenance = $this->provenanceMetadata($document);
+        $documentMetadata = $this->currentMetadata($document);
+        $provenance = $this->provenanceMetadata($document, $documentMetadata);
+        $propagated = $this->propagatedMetadata($documentMetadata);
+        $withContent = $this->payloadIncludesContent();
 
         $records = [];
         foreach ($children as $i => $child) {
+            $metadata = [
+                // Lowest priority first: document provenance, then chunk
+                // metadata, then the explicitly propagated (filterable) document
+                // metadata — so a declared access `scope` beats parser output —
+                // and finally the authoritative system keys, which nothing can
+                // shadow.
+                ...$provenance,
+                ...$this->payloadMetadata($child),
+                ...$propagated,
+                'tenant_id' => $tenantId,
+                'document_id' => (string) $document->id,
+                'chunk_id' => $rowIds[$child->index],
+                'parent_chunk_id' => $child->parentIndex !== null ? ($rowIds[$child->parentIndex] ?? null) : null,
+                'is_parent' => false,
+            ];
+
+            if ($withContent) {
+                $metadata['content'] = $child->content;
+            }
+
             $records[] = new VectorRecord(
                 id: $rowIds[$child->index],
                 vector: $response->vectorAt($i),
-                metadata: [
-                    // Document-level provenance first (lowest priority) so a chunk
-                    // is always traceable to its source — and the authoritative
-                    // system keys below can never be shadowed by it.
-                    ...$provenance,
-                    ...$this->payloadMetadata($child),
-                    'tenant_id' => $tenantId,
-                    'document_id' => (string) $document->id,
-                    'chunk_id' => $rowIds[$child->index],
-                    'parent_chunk_id' => $child->parentIndex !== null ? ($rowIds[$child->parentIndex] ?? null) : null,
-                    'content' => $child->content,
-                    'is_parent' => false,
-                ],
+                metadata: $metadata,
             );
         }
 
@@ -197,18 +219,58 @@ final class Indexer
     }
 
     /**
-     * Provenance written into every vector payload so any retrieved chunk traces
-     * back to its origin (FR-RT-06): the source type, a human-readable reference
-     * (URL / filename / logical key), and any explicit per-document propagation
-     * (e.g. an Eloquent model's `embeddable_*` identity via `rag_vector_metadata`).
+     * Whether chunk plaintext is copied into the vector payload.
+     *
+     * `security.vector_payload_content`: true / false, or null (auto) = only
+     * when content encryption is disabled — so an encrypted deployment never
+     * leaves plaintext in the vector store by default.
+     */
+    public function payloadIncludesContent(): bool
+    {
+        $configured = $this->config->get('rag-engine.security.vector_payload_content');
+
+        if ($configured === null || $configured === '') {
+            return ! (bool) $this->config->get('rag-engine.security.encryption_enabled', true);
+        }
+
+        $explicit = is_scalar($configured)
+            ? filter_var($configured, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE)
+            : null;
+
+        if (! is_bool($explicit)) {
+            // Fail closed on a typo rather than silently picking a posture.
+            throw new RagException('rag-engine.security.vector_payload_content must be true, false or null (auto).');
+        }
+
+        return $explicit;
+    }
+
+    /**
+     * The document metadata as currently persisted: a concurrent metadata
+     * refresh (e.g. an access-scope change) must never be overwritten by a
+     * stale in-memory copy.
      *
      * @return array<string, mixed>
      */
-    private function provenanceMetadata(Document $document): array
+    private function currentMetadata(Document $document): array
     {
-        /** @var array<string, mixed> $metadata */
-        $metadata = is_array($document->metadata) ? $document->metadata : [];
+        $fresh = $document->exists
+            ? Document::query()->whereKey($document->getKey())->first()
+            : null;
 
+        return ($fresh instanceof Document ? $fresh->metadata : $document->metadata) ?? [];
+    }
+
+    /**
+     * Provenance written into every vector payload so any retrieved chunk traces
+     * back to its origin (FR-RT-06): the source type and a human-readable
+     * reference (URL / filename / logical key).
+     *
+     * @param  array<string, mixed>  $metadata
+     * @return array<string, mixed>
+     */
+    private function provenanceMetadata(Document $document, array $metadata): array
+    {
         $provenance = ['source_type' => $document->source_type];
 
         foreach (['url', 'filename', 'document_key', 'source_ref', 'key'] as $candidate) {
@@ -218,13 +280,33 @@ final class Indexer
             }
         }
 
+        return $provenance;
+    }
+
+    /**
+     * Explicit per-document propagation (`rag_vector_metadata`): filterable
+     * metadata such as an access `scope`, or an Eloquent model's `embeddable_*`
+     * identity. System keys are stripped so they can never be shadowed.
+     *
+     * @param  array<string, mixed>  $metadata
+     * @return array<string, mixed>
+     */
+    private function propagatedMetadata(array $metadata): array
+    {
         $explicit = $metadata['rag_vector_metadata'] ?? [];
-        if (is_array($explicit)) {
-            /** @var array<string, mixed> $explicit */
-            $provenance = [...$provenance, ...$explicit];
+
+        if (! is_array($explicit)) {
+            return [];
         }
 
-        return $provenance;
+        $propagated = [];
+        foreach ($explicit as $key => $value) {
+            if (is_string($key) && ! in_array($key, self::SYSTEM_KEYS, true)) {
+                $propagated[$key] = $value;
+            }
+        }
+
+        return $propagated;
     }
 
     /**

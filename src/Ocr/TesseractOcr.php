@@ -21,7 +21,7 @@ use Throwable;
  */
 final class TesseractOcr implements Ocr
 {
-    private const IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/jpg', 'image/tiff', 'image/bmp', 'image/gif'];
+    private const IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/jpg', 'image/webp', 'image/tiff', 'image/bmp', 'image/gif'];
 
     public function __construct(
         private readonly string $bin = 'tesseract',

@@ -76,7 +76,7 @@ final class Retriever
             tenantId: $tenantId,
         );
 
-        $candidates = $store->search($request->namespace, $vector, $query);
+        $candidates = $this->hydrate($store->search($request->namespace, $vector, $query), $tenantId);
 
         if ($request->hybrid) {
             $keywordRanking = $this->keyword->rank($queryText, $candidates, $fetchK);
@@ -84,6 +84,73 @@ final class Retriever
         }
 
         return $candidates;
+    }
+
+    /**
+     * Fill in hit content that is not stored in the vector payload (the secure
+     * default when encryption is on) by decrypting the matching chunk rows —
+     * one batched, tenant-scoped query. Legacy hits that still carry payload
+     * content are used as-is. Hits whose chunk row is gone (orphan vectors) or
+     * belongs to another tenant are dropped: nothing surfaces without its
+     * encrypted source of truth.
+     *
+     * @param  list<SearchHit>  $hits
+     * @return list<SearchHit>
+     */
+    private function hydrate(array $hits, string $tenantId): array
+    {
+        $missing = [];
+        foreach ($hits as $hit) {
+            if ($hit->content === '') {
+                $missing[] = $hit->chunkId ?? $hit->id;
+            }
+        }
+
+        if ($missing === []) {
+            return $hits;
+        }
+
+        $rows = Chunk::query()
+            ->where('tenant_id', $tenantId)
+            ->whereIn('id', array_values(array_unique($missing)))
+            ->get(['id', 'encrypted_content', 'content']);
+
+        $contents = [];
+        foreach ($rows as $row) {
+            $contents[(string) $row->id] = $this->chunkText($row);
+        }
+
+        $hydrated = [];
+        foreach ($hits as $hit) {
+            if ($hit->content !== '') {
+                $hydrated[] = $hit;
+
+                continue;
+            }
+
+            $content = $contents[$hit->chunkId ?? $hit->id] ?? null;
+
+            if ($content !== null) {
+                $hydrated[] = $hit->withContent($content);
+            }
+        }
+
+        return $hydrated;
+    }
+
+    private function chunkText(Chunk $chunk): ?string
+    {
+        if ($chunk->encrypted_content === null) {
+            return $chunk->content;
+        }
+
+        $payload = json_decode($chunk->encrypted_content, true, flags: JSON_THROW_ON_ERROR);
+
+        if (! is_array($payload)) {
+            return null;
+        }
+
+        return $this->encrypter->decrypt(EncryptedPayload::fromArray($payload));
     }
 
     /**
