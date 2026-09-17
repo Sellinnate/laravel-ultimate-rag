@@ -104,7 +104,9 @@ How it protects the keys:
 - **Crypto-shredding is a hard `DELETE`** of the row (`destroyKey()` /
   `rag:purge`).
 - Creating a key is an **atomic insert-if-absent**, so two nodes provisioning
-  the same tenant at once can't overwrite each other's key.
+  the same tenant at once can't overwrite each other's key. Keys are read with
+  a locking read, so a node inside a long MySQL/MariaDB `REPEATABLE READ`
+  transaction still sees a key another node has just committed.
 
 The table comes from the package migration `create_rag_kms_keys_table`
 (publish tag `rag-engine-migrations`). If you set `RAG_KMS_CONNECTION`, the

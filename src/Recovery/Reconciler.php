@@ -49,21 +49,23 @@ final class Reconciler
     /**
      * Delete a tenant's orphan embedding records (their chunk row is gone).
      *
+     * One statement with a correlated NOT EXISTS: a record whose chunk is
+     * committed concurrently (an index run) is never mistaken for an orphan.
+     *
      * @return int Number of records removed.
      */
     public function pruneOrphans(string $tenantId): int
     {
-        $orphans = $this->reconcile($tenantId)['orphan_embeddings'];
-        $removed = 0;
+        $records = (new EmbeddingRecord)->getTable();
+        $chunks = (new Chunk)->getTable();
 
-        foreach (array_chunk($orphans, 500) as $batch) {
-            $removed += EmbeddingRecord::query()
-                ->where('tenant_id', $tenantId)
-                ->whereIn('chunk_id', $batch)
-                ->delete();
-        }
-
-        return $removed;
+        return EmbeddingRecord::query()
+            ->where('tenant_id', $tenantId)
+            ->whereNotExists(fn ($query) => $query
+                ->selectRaw('1')
+                ->from($chunks)
+                ->whereColumn("{$chunks}.id", "{$records}.chunk_id"))
+            ->delete();
     }
 
     public function isConsistent(string $tenantId): bool

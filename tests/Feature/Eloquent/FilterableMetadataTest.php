@@ -11,6 +11,7 @@ use Sellinnate\RagEngine\Contracts\Parser;
 use Sellinnate\RagEngine\Contracts\VectorStore;
 use Sellinnate\RagEngine\Data\ParsedDocument;
 use Sellinnate\RagEngine\Data\RetrievalQuery;
+use Sellinnate\RagEngine\Eloquent\EmbeddableCompiler;
 use Sellinnate\RagEngine\Eloquent\EmbeddableDefinition;
 use Sellinnate\RagEngine\Embedding\EmbeddingService;
 use Sellinnate\RagEngine\Facades\Rag;
@@ -326,4 +327,16 @@ it('never lets parser metadata smuggle plaintext content into the payload', func
     }
 
     expect(Rag::search('leaky parser')->first()?->content)->toBe('Leaky parser body.');
+});
+
+it('never lets a key-less ingest claim (and rescope) a model document', function () {
+    $note = BrainNote::create(['title' => 'Same', 'body' => 'Shared words.', 'scope' => 'hr']);
+    $modelDocument = $note->syncEmbedding();
+
+    $compiled = app(EmbeddableCompiler::class)->compile($note);
+    $plain = Rag::ingest(Rag::source()->text($compiled->content, ['rag_vector_metadata' => ['scope' => 'internal']]));
+
+    expect($plain->id)->not->toBe($modelDocument->id)
+        ->and($modelDocument->fresh()->status)->toBe('indexed')
+        ->and($modelDocument->fresh()->metadata['rag_vector_metadata']['scope'])->toBe('hr');
 });

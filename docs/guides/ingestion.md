@@ -76,9 +76,10 @@ $a->is($b);   // true — only one row exists
 
 Two refinements:
 
-- **A source with a `document_key` only matches its own document.** Two
-  different records with identical text (e.g. two Eloquent models) stay two
-  documents, each with its own metadata.
+- **A source with a `document_key` only matches its own document, and a source
+  without one never matches a keyed document.** Two records with identical
+  text (e.g. two Eloquent models, or a model and a plain text upload) stay
+  separate documents, each with its own metadata.
 - **Changed vector metadata is applied, not ignored.** If identical content is
   ingested again with a different `rag_vector_metadata` (see below), the
   existing document takes the new values and goes back to `pending`, so the next

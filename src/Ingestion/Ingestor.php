@@ -63,8 +63,12 @@ final class Ingestor
             ->where('content_hash', $hash)
             ->whereNull('soft_deleted_at');
 
+        // …and a key-less source never claims a keyed document (e.g. a model's):
+        // it could otherwise overwrite that document's access metadata.
         if ($documentKey !== null) {
             $duplicateQuery->where('metadata->document_key', $documentKey);
+        } else {
+            $duplicateQuery->whereNull('metadata->document_key');
         }
 
         $duplicate = $duplicateQuery->first();
@@ -87,7 +91,11 @@ final class Ingestor
                     ->where('tenant_id', $tenantId)
                     ->where('content_hash', $hash)
                     ->whereNull('soft_deleted_at')
-                    ->when($documentKey !== null, fn ($query) => $query->where('metadata->document_key', $documentKey))
+                    ->when(
+                        $documentKey !== null,
+                        fn ($query) => $query->where('metadata->document_key', $documentKey),
+                        fn ($query) => $query->whereNull('metadata->document_key'),
+                    )
                     ->orderByDesc('version')
                     ->first();
 

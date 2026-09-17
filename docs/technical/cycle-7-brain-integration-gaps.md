@@ -123,6 +123,28 @@ crypto-shred path already deleted by tenant. `rag:reconcile --prune`
   the stored `embeddable_type`/`embeddable_id`, so models with a custom
   `documentKey()` are removed as well.
 
+- **Key-less ingest claiming a keyed document (independent review).** Content
+  ingested without a `document_key` no longer dedupes against keyed documents,
+  so it can't take over (and re-scope) a model's document.
+- **List-valued metadata (independent review).** `metadata()` lists reach the
+  vectors, but pgvector, `database` and memory compared them as whole values
+  while Qdrant matches elements. All stores now use element semantics: a
+  scalar or `in` matches if any element does, `neq`/`nin` exclude when any
+  element matches, ranges match on any element, and `null` also matches `[]`.
+  The pgvector compiler uses `@>` and a guarded `jsonb_array_elements`
+  subquery. The gated test checks 35 filter cases against both pgvector and
+  the in-memory matcher.
+- **MySQL REPEATABLE READ (independent review).** Inside the ingest
+  transaction, a node could miss a KEK that another node had just created
+  ("KEK not found"). `DatabaseKeyStore::get()` is now a locking read, and
+  `LocalKms` decides existence (unwrap, rotate) from `get()` rather than the
+  plain `has()`. That also stops a stale view from collapsing the KEK versions
+  during rotation. `has()` stays non-locking to avoid gap-lock deadlocks. The
+  failure and the fix were reproduced against MySQL 8 with two connections.
+- **Race-free prune (independent review).** `pruneOrphans()` is a single
+  `DELETE … WHERE NOT EXISTS (chunk)`, so a record committed together with its
+  chunk during the prune is never removed.
+
 ## G — Images never reached OCR
 
 No parser claimed `image/*`, so images failed as unsupported even with OCR

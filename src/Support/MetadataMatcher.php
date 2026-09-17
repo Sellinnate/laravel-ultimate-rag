@@ -8,13 +8,18 @@ use Sellinnate\RagEngine\Exceptions\RagException;
 
 /**
  * Metadata filter matching shared by the in-process and SQL-backed vector
- * stores (FR-VS-08). Scalar equality is STRICT (=== ) so numeric-string tenant
- * ids can never collide and leak across tenants.
+ * stores (FR-VS-08). The pgvector SQL push-down and the Qdrant translation
+ * implement the same grammar:
  *
- * Range operators (gt/gte/lt/lte) only compare like with like: numbers with
- * numbers, strings with strings (byte-wise, so ISO-8601 dates order
- * correctly). A missing value or a type mismatch never matches — the same
- * semantics the pgvector SQL push-down and Qdrant apply.
+ * - `key => scalar` / `eq`: STRICT equality (`===`), so numeric-string tenant
+ *   ids can never collide and leak across tenants. When the stored value is a
+ *   list, it matches if the list CONTAINS the scalar.
+ * - `key => null`: the key is missing, null, or an empty list.
+ * - `key => [a, b]` / `in`: any of the values (for a stored list: any element).
+ * - `neq` / `nin`: the negations of `eq` / `in` (a missing key matches).
+ * - `gt`/`gte`/`lt`/`lte`: numbers with numbers, strings with strings
+ *   (byte-wise, so ISO-8601 dates order correctly); for a stored list, any
+ *   element may satisfy it. A missing value or a type mismatch never matches.
  */
 final class MetadataMatcher
 {
@@ -29,13 +34,13 @@ final class MetadataMatcher
 
             if (is_array($expected)) {
                 if (array_is_list($expected)) {
-                    if (! in_array($actual, $expected, true)) {
+                    if (! self::in($actual, $expected)) {
                         return false;
                     }
                 } elseif (! self::matchesOperators($actual, $expected)) {
                     return false;
                 }
-            } elseif ($actual !== $expected) {
+            } elseif (! self::equals($actual, $expected)) {
                 return false;
             }
         }
@@ -50,14 +55,14 @@ final class MetadataMatcher
     {
         foreach ($operators as $op => $value) {
             $result = match ($op) {
-                'eq' => $actual === $value,
-                'neq' => $actual !== $value,
-                'gt' => ($cmp = self::compare($actual, $value)) !== null && $cmp > 0,
-                'gte' => ($cmp = self::compare($actual, $value)) !== null && $cmp >= 0,
-                'lt' => ($cmp = self::compare($actual, $value)) !== null && $cmp < 0,
-                'lte' => ($cmp = self::compare($actual, $value)) !== null && $cmp <= 0,
-                'in' => is_array($value) && in_array($actual, $value, true),
-                'nin' => is_array($value) && ! in_array($actual, $value, true),
+                'eq' => self::equals($actual, $value),
+                'neq' => ! self::equals($actual, $value),
+                'gt' => self::range($actual, $value, static fn (int $cmp): bool => $cmp > 0),
+                'gte' => self::range($actual, $value, static fn (int $cmp): bool => $cmp >= 0),
+                'lt' => self::range($actual, $value, static fn (int $cmp): bool => $cmp < 0),
+                'lte' => self::range($actual, $value, static fn (int $cmp): bool => $cmp <= 0),
+                'in' => is_array($value) && self::in($actual, $value),
+                'nin' => is_array($value) && ! self::in($actual, $value),
                 default => throw new RagException("Unsupported filter operator [{$op}]."),
             };
 
@@ -67,6 +72,52 @@ final class MetadataMatcher
         }
 
         return true;
+    }
+
+    private static function equals(mixed $actual, mixed $expected): bool
+    {
+        if ($expected === null) {
+            return $actual === null || $actual === [];
+        }
+
+        if ($actual === $expected) {
+            return true;
+        }
+
+        // A stored list contains the scalar.
+        return ! is_array($expected) && is_array($actual) && array_is_list($actual) && in_array($expected, $actual, true);
+    }
+
+    /**
+     * @param  array<mixed>  $candidates
+     */
+    private static function in(mixed $actual, array $candidates): bool
+    {
+        foreach ($candidates as $candidate) {
+            if (self::equals($actual, $candidate)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * @param  callable(int): bool  $accept
+     */
+    private static function range(mixed $actual, mixed $expected, callable $accept): bool
+    {
+        $values = is_array($actual) && array_is_list($actual) ? $actual : [$actual];
+
+        foreach ($values as $value) {
+            $cmp = self::compare($value, $expected);
+
+            if ($cmp !== null && $accept($cmp)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**

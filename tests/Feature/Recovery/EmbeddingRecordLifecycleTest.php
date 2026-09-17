@@ -96,11 +96,20 @@ it('rag:reconcile --prune deletes pre-existing orphan records of that tenant onl
 
     $this->artisan('rag:reconcile', ['tenant' => 't-prune'])->assertFailed();
 
+    // A live document of the same tenant keeps its records.
+    Rag::forTenant('t-prune', function () {
+        $live = Rag::ingest(new IngestionSource('Live document stays.', 'text/plain', IngestionSource::TYPE_TEXT));
+        app(IngestionPipeline::class)->process($live);
+    });
+    $live = EmbeddingRecord::query()->where('tenant_id', 't-prune')->count() - $leftBehind;
+
     $this->artisan('rag:reconcile', ['tenant' => 't-prune', '--prune' => true])
         ->expectsOutputToContain("Pruned {$leftBehind} orphan embedding record(s).")
         ->assertSuccessful();
 
-    expect(EmbeddingRecord::query()->where('tenant_id', 'someone-else')->count())->toBe(1);
+    expect(EmbeddingRecord::query()->where('tenant_id', 'someone-else')->count())->toBe(1)
+        ->and(EmbeddingRecord::query()->where('tenant_id', 't-prune')->count())->toBe($live)
+        ->and($live)->toBeGreaterThan(0);
 });
 
 it('forgets and reindex-removes models that use a custom document key', function () {

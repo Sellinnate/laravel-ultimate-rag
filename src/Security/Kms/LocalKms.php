@@ -60,13 +60,17 @@ final class LocalKms implements KeyManagement
 
     public function unwrapDataKey(string $keyId, string $wrappedKey): string
     {
-        if (! $this->store->has($keyId)) {
+        // Existence is decided by reading the material itself (a store's get()
+        // may be a locking read that sees keys other nodes just committed).
+        $raw = $this->store->get($keyId);
+
+        if ($raw === null) {
             throw new EncryptionException(
                 "KEK [{$keyId}] does not exist or was crypto-shredded; the data key cannot be unwrapped."
             );
         }
 
-        foreach ($this->versions($keyId) as $kek) {
+        foreach (array_reverse($this->decodeVersions($raw)) as $kek) {
             try {
                 return $this->cipher->decrypt($kek, $wrappedKey);
             } catch (EncryptionException) {
@@ -86,7 +90,10 @@ final class LocalKms implements KeyManagement
 
     public function rotateKey(string $keyId): void
     {
-        $versions = $this->store->has($keyId) ? $this->storedVersions($keyId) : [];
+        // Read the material (not has()) so a stale "missing" can never replace
+        // the existing versions with a single new one.
+        $raw = $this->store->get($keyId);
+        $versions = $raw === null ? [] : $this->decodeVersions($raw);
         $versions[] = random_bytes(32);
 
         $this->store->put($keyId, $this->encodeVersions($versions));
@@ -108,16 +115,6 @@ final class LocalKms implements KeyManagement
     }
 
     /**
-     * KEK versions in newest-first order, for unwrap trial.
-     *
-     * @return list<string>
-     */
-    private function versions(string $keyId): array
-    {
-        return array_reverse($this->storedVersions($keyId));
-    }
-
-    /**
      * KEK versions as stored: oldest-first, newest appended last.
      *
      * @return list<string>
@@ -130,6 +127,14 @@ final class LocalKms implements KeyManagement
             throw new EncryptionException("KEK [{$keyId}] not found.");
         }
 
+        return $this->decodeVersions($raw);
+    }
+
+    /**
+     * @return list<string> Oldest first.
+     */
+    private function decodeVersions(string $raw): array
+    {
         /** @var list<string> $decoded */
         $decoded = json_decode($raw, true, flags: JSON_THROW_ON_ERROR);
 

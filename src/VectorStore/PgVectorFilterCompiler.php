@@ -10,20 +10,20 @@ use Sellinnate\RagEngine\Support\MetadataMatcher;
 
 /**
  * Compiles metadata filters into a parameterised Postgres `WHERE` fragment over
- * a `jsonb` column, so the pgvector store filters BEFORE `ORDER BY … LIMIT`
- * (a selective filter still returns topK hits).
+ * the `metadata` jsonb column, so the pgvector store filters BEFORE
+ * `ORDER BY … LIMIT` (a selective filter still returns topK hits).
  *
- * Semantics mirror {@see MetadataMatcher} (which stays as a safety net):
+ * Semantics mirror {@see MetadataMatcher} (which stays as a safety net),
+ * including list-valued metadata (a stored list matches on its elements):
  *
- * - `key => scalar`         strict equality (`"1"` never equals `1`)
- * - `key => null`           the key is missing or JSON null
- * - `key => [a, b]`         IN (strict)
- * - `key => [op => value]`  eq, neq, in, nin, gt, gte, lt, lte
- *   (range operators compare numbers with numbers and strings with strings,
- *   byte-wise; anything else never matches)
+ * - `key => scalar` / `eq`  strict equality, or list containment
+ * - `key => null`           missing, JSON null or an empty list
+ * - `key => [a, b]` / `in`  any value (any element of a stored list)
+ * - `neq` / `nin`           negations
+ * - `gt`/`gte`/`lt`/`lte`   numbers numerically, strings byte-wise; any
+ *                           element of a stored list may satisfy them
  *
- * Every predicate is null-safe (never SQL NULL), so `neq`/`nin` are plain
- * negations and a missing key behaves exactly like PHP's `null`.
+ * Every predicate is null-safe (never SQL NULL), so negations are plain `NOT`.
  *
  * Injection safety: keys AND values are bound parameters, keys are also
  * validated against {@see KEY_PATTERN}, and the SQL text itself is built only
@@ -90,7 +90,7 @@ final class PgVectorFilterCompiler
     }
 
     /**
-     * Null-safe strict equality.
+     * Null-safe strict equality; a scalar also matches inside a stored list.
      *
      * @return literal-string
      */
@@ -103,11 +103,18 @@ final class PgVectorFilterCompiler
         $field = $this->field($key);
         $this->bindJson($value);
 
-        return "(COALESCE({$field} = ?::jsonb, FALSE))";
+        if (is_array($value)) {
+            return "(COALESCE({$field} = ?::jsonb, FALSE))";
+        }
+
+        $container = $this->field($key);
+        $this->bindJson([$value]);
+
+        return "(COALESCE({$field} = ?::jsonb, FALSE) OR COALESCE({$container} @> ?::jsonb, FALSE))";
     }
 
     /**
-     * Null-safe strict membership.
+     * Null-safe strict membership (element-wise for a stored list).
      *
      * @param  list<mixed>  $values
      * @return literal-string
@@ -119,12 +126,13 @@ final class PgVectorFilterCompiler
 
         if ($nonNull !== []) {
             $field = $this->field($key);
-            $placeholders = [];
-            foreach ($nonNull as $value) {
-                $placeholders[] = '?::jsonb';
-                $this->bindJson($value);
+            $parts[] = 'COALESCE('.$field.' IN ('.$this->jsonPlaceholders($nonNull).'), FALSE)';
+
+            $scalars = array_values(array_filter($nonNull, static fn (mixed $v): bool => ! is_array($v)));
+            if ($scalars !== []) {
+                $elements = $this->elements($key);
+                $parts[] = 'EXISTS (SELECT 1 FROM '.$elements.' AS element(value) WHERE element.value IN ('.$this->jsonPlaceholders($scalars).'))';
             }
-            $parts[] = 'COALESCE('.$field.' IN ('.implode(', ', $placeholders).'), FALSE)';
         }
 
         if (count($nonNull) !== count($values)) {
@@ -135,7 +143,8 @@ final class PgVectorFilterCompiler
     }
 
     /**
-     * Typed range comparison: numbers numerically, strings byte-wise.
+     * Typed range comparison: numbers numerically, strings byte-wise; any
+     * element of a stored list may satisfy it.
      *
      * @param  literal-string  $sqlOperator
      * @return literal-string
@@ -147,19 +156,27 @@ final class PgVectorFilterCompiler
                 throw new RagException("Range filter on [{$key}] needs a finite number.");
             }
 
+            $operand = is_int($value) ? $value : $this->floatString($value);
+
             $typeField = $this->field($key);
             $valueField = $this->field($key);
-            $this->bindings[] = is_int($value) ? $value : $this->floatString($value);
+            $this->bindings[] = $operand;
+            $elements = $this->elements($key);
+            $this->bindings[] = $operand;
 
-            return "(CASE WHEN jsonb_typeof({$typeField}) = 'number' THEN ({$valueField})::numeric {$sqlOperator} ?::numeric ELSE FALSE END)";
+            return "(CASE WHEN jsonb_typeof({$typeField}) = 'number' THEN ({$valueField})::numeric {$sqlOperator} ?::numeric ELSE FALSE END"
+                ." OR EXISTS (SELECT 1 FROM {$elements} AS element(value) WHERE CASE WHEN jsonb_typeof(element.value) = 'number' THEN (element.value)::numeric {$sqlOperator} ?::numeric ELSE FALSE END))";
         }
 
         if (is_string($value)) {
             $typeField = $this->field($key);
             $textField = $this->textField($key);
             $this->bindings[] = $value;
+            $elements = $this->elements($key);
+            $this->bindings[] = $value;
 
-            return "(CASE WHEN jsonb_typeof({$typeField}) = 'string' THEN {$textField} COLLATE \"C\" {$sqlOperator} ? ELSE FALSE END)";
+            return "(CASE WHEN jsonb_typeof({$typeField}) = 'string' THEN {$textField} COLLATE \"C\" {$sqlOperator} ? ELSE FALSE END"
+                ." OR EXISTS (SELECT 1 FROM {$elements} AS element(value) WHERE CASE WHEN jsonb_typeof(element.value) = 'string' THEN (element.value #>> '{}') COLLATE \"C\" {$sqlOperator} ? ELSE FALSE END))";
         }
 
         // PHP never matches a range against null/bool/array operands either.
@@ -167,6 +184,8 @@ final class PgVectorFilterCompiler
     }
 
     /**
+     * Missing key, JSON null or an empty list.
+     *
      * @return literal-string
      */
     private function isNull(string $key): string
@@ -174,7 +193,21 @@ final class PgVectorFilterCompiler
         $first = $this->field($key);
         $second = $this->field($key);
 
-        return "({$first} IS NULL OR COALESCE({$second} = 'null'::jsonb, FALSE))";
+        return "({$first} IS NULL OR COALESCE({$second} IN ('null'::jsonb, '[]'::jsonb), FALSE))";
+    }
+
+    /**
+     * The elements of a stored list (none when the value is not a list), as a
+     * set-returning expression that never errors on scalars.
+     *
+     * @return literal-string
+     */
+    private function elements(string $key): string
+    {
+        $typeField = $this->field($key);
+        $valueField = $this->field($key);
+
+        return "jsonb_array_elements(CASE WHEN jsonb_typeof({$typeField}) = 'array' THEN {$valueField} ELSE '[]'::jsonb END)";
     }
 
     /**
@@ -197,6 +230,21 @@ final class PgVectorFilterCompiler
         $this->bindings[] = $key;
 
         return '(metadata ->> ?::text)';
+    }
+
+    /**
+     * @param  list<mixed>  $values
+     * @return literal-string
+     */
+    private function jsonPlaceholders(array $values): string
+    {
+        $placeholders = [];
+        foreach ($values as $value) {
+            $this->bindJson($value);
+            $placeholders[] = '?::jsonb';
+        }
+
+        return implode(', ', $placeholders);
     }
 
     /**

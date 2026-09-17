@@ -24,6 +24,10 @@ use SensitiveParameter;
  * - {@see forget()} hard-deletes the row: crypto-shredding (FR-SEC-04).
  * - {@see add()} is an atomic insert-if-absent, safe under concurrent
  *   provisioning of the same tenant from several nodes.
+ * - {@see get()} is a locking read, so inside a REPEATABLE READ transaction
+ *   (MySQL/MariaDB) it still sees a KEK another node committed meanwhile.
+ *   {@see has()} is a plain read on purpose: a locking read of a missing row
+ *   takes a gap lock, which would deadlock two nodes creating the same key.
  */
 final class DatabaseKeyStore implements AtomicKeyStore
 {
@@ -58,7 +62,10 @@ final class DatabaseKeyStore implements AtomicKeyStore
 
     public function get(string $keyId): ?string
     {
-        $material = $this->rows()->where('key_hash', $this->hash($keyId))->value('material');
+        // A locking read sees the latest COMMITTED row even inside a long
+        // REPEATABLE READ transaction (MySQL/MariaDB), so a KEK another node
+        // just created is found instead of the stale snapshot's "missing".
+        $material = $this->rows()->where('key_hash', $this->hash($keyId))->sharedLock()->value('material');
 
         if (! is_string($material)) {
             return null;

@@ -73,6 +73,18 @@ The same rules apply on every vector store:
 | `->where('scope', ['eq' => 'hr'])` / `['neq' => 'hr']` | equal / not equal (`neq` also matches a missing key). |
 | `->where('year', ['gte' => 2024, 'lt' => 2026])` | range: **numbers with numbers, strings with strings**. Strings compare byte by byte, so ISO dates (`'2026-01-31'`) work. A missing key or a mismatched type never matches. |
 
+**List values.** When the stored value is a list (e.g. `'scopes' => ['hr', 'finance']`),
+filters look at its **elements**:
+
+| Filter on `scopes = ['hr', 'finance']` | Result |
+|---|---|
+| `->where('scopes', 'hr')` | matches (the list contains `'hr'`) |
+| `->where('scopes', ['in' => ['legal', 'finance']])` | matches (at least one element is allowed) |
+| `->where('scopes', ['nin' => ['hr']])` | **no** match (an element is excluded) |
+| `->where('scopes', ['neq' => 'finance'])` | **no** match |
+| `->where('scopes', null)` | no match (`null` matches a missing key, `null` or an **empty** list) |
+| `->where('scopes', ['eq' => ['hr', 'finance']])` | matches only this exact list |
+
 Several conditions (several `where()` calls, or one `filter([...])`) must **all**
 match. An unknown operator throws a `RagException`. An empty `in` list matches
 nothing, so a user with no allowed scopes gets no results.
@@ -84,10 +96,12 @@ there. All other rules above apply to every store.
 :::
 
 ::: callout tip "Access control with a scope filter"
-Store an access `scope` on every vector and always filter on the scopes the
-current user is allowed to see:
-`->where('scope', ['in' => $allowedScopes])`. The tenant boundary is enforced by
-the engine; scopes *inside* a tenant are yours to enforce, on every query.
+Store an access `scope` (or a list of `scopes`) on every vector and always
+filter on the scopes the current user is allowed to see:
+`->where('scope', ['in' => $allowedScopes])`. With a list, a document is
+returned when **any** of its scopes is allowed. The tenant boundary is
+enforced by the engine; scopes *inside* a tenant are yours to enforce, on every
+query.
 :::
 
 ### A fully-loaded example

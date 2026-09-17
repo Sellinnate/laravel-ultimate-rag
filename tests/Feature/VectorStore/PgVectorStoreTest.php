@@ -162,59 +162,69 @@ describe('native pgvector (requires Postgres + vector extension)', function () {
     });
 
     it('pushes every operator down with the same semantics as the PHP matcher', function () {
-        $this->store->upsert('docs', [
-            new VectorRecord('a', [1.0, 0.0, 0.0], ['tenant_id' => 't1', 'year' => 2023, 'score' => 1.5, 'tag' => 'x', 'date' => '2024-01-10', 'flag' => true, 'tags' => ['p', 'q']]),
-            new VectorRecord('b', [1.0, 0.1, 0.0], ['tenant_id' => 't1', 'year' => 2024, 'score' => 2.5, 'tag' => 'y', 'date' => '2024-03-01', 'flag' => false]),
-            new VectorRecord('c', [1.0, 0.2, 0.0], ['tenant_id' => 't1', 'year' => '2025', 'tag' => null, 'num' => '1']),
-            new VectorRecord('d', [1.0, 0.3, 0.0], ['tenant_id' => 't1', 'num' => 1]),
-        ]);
+        $records = [
+            new VectorRecord('a', [1.0, 0.0, 0.0], ['tenant_id' => 't1', 'year' => 2023, 'score' => 1.5, 'tag' => 'x', 'date' => '2024-01-10', 'flag' => true, 'tags' => ['p', 'q'], 'years' => [2019, 2020]]),
+            new VectorRecord('b', [1.0, 0.1, 0.0], ['tenant_id' => 't1', 'year' => 2024, 'score' => 2.5, 'tag' => 'y', 'date' => '2024-03-01', 'flag' => false, 'tags' => ['q', 'hr'], 'years' => [2025]]),
+            new VectorRecord('c', [1.0, 0.2, 0.0], ['tenant_id' => 't1', 'year' => '2025', 'tag' => null, 'num' => '1', 'tags' => []]),
+            new VectorRecord('d', [1.0, 0.3, 0.0], ['tenant_id' => 't1', 'num' => 1, 'tags' => ['1'], 'dates' => ['2026-05-01']]),
+        ];
+        $this->store->upsert('docs', $records);
 
-        $ids = function (array $filters): array {
-            $hits = $this->store->search('docs', [1.0, 0.0, 0.0], new RetrievalQuery('q', topK: 10, filters: $filters, tenantId: 't1'));
+        $memory = new InMemoryVectorStore;
+        $memory->createNamespace('docs', 3);
+        $memory->upsert('docs', $records);
+
+        $ids = static function ($store, array $filters): array {
+            $hits = $store->search('docs', [1.0, 0.0, 0.0], new RetrievalQuery('q', topK: 10, filters: $filters, tenantId: 't1'));
             $ids = array_map(static fn ($h) => $h->id, $hits);
             sort($ids);
 
             return $ids;
         };
 
-        expect($ids(['tag' => 'x']))->toBe(['a'])
-            ->and($ids(['tag' => null]))->toBe(['c', 'd'])
-            ->and($ids(['tag' => ['x', null]]))->toBe(['a', 'c', 'd'])
-            ->and($ids(['tag' => []]))->toBe([])
-            ->and($ids(['flag' => true]))->toBe(['a'])
-            ->and($ids(['flag' => false]))->toBe(['b'])
-            ->and($ids(['num' => 1]))->toBe(['d'])
-            ->and($ids(['num' => '1']))->toBe(['c'])
-            ->and($ids(['tags' => ['eq' => ['p', 'q']]]))->toBe(['a'])
-            ->and($ids(['year' => ['gte' => 2024]]))->toBe(['b'])
-            ->and($ids(['year' => ['gt' => 2022, 'lt' => 2024]]))->toBe(['a'])
-            ->and($ids(['score' => ['lte' => 2.0]]))->toBe(['a'])
-            ->and($ids(['date' => ['gte' => '2024-02-01']]))->toBe(['b'])
-            ->and($ids(['year' => ['lt' => '2030']]))->toBe(['c'])
-            ->and($ids(['year' => ['gt' => true]]))->toBe([])
-            ->and($ids(['tag' => ['eq' => 'y']]))->toBe(['b'])
-            ->and($ids(['tag' => ['neq' => 'x']]))->toBe(['b', 'c', 'd'])
-            ->and($ids(['tag' => ['neq' => null]]))->toBe(['a', 'b'])
-            ->and($ids(['tag' => ['in' => ['x', 'y']]]))->toBe(['a', 'b'])
-            ->and($ids(['tag' => ['nin' => ['x']]]))->toBe(['b', 'c', 'd'])
-            ->and($ids(['tag' => ['nin' => ['x', null]]]))->toBe(['b'])
-            ->and($ids(['tag' => ['in' => 'x']]))->toBe([])
-            ->and($ids(['tag' => ['nin' => 'x']]))->toBe([]);
+        $cases = [
+            [['tag' => 'x'], ['a']],
+            [['tag' => null], ['c', 'd']],
+            [['tag' => ['x', null]], ['a', 'c', 'd']],
+            [['tag' => []], []],
+            [['flag' => true], ['a']],
+            [['flag' => false], ['b']],
+            [['num' => 1], ['d']],
+            [['num' => '1'], ['c']],
+            [['tags' => ['eq' => ['p', 'q']]], ['a']],
+            [['year' => ['gte' => 2024]], ['b']],
+            [['year' => ['gt' => 2022, 'lt' => 2024]], ['a']],
+            [['score' => ['lte' => 2.0]], ['a']],
+            [['date' => ['gte' => '2024-02-01']], ['b']],
+            [['year' => ['lt' => '2030']], ['c']],
+            [['year' => ['gt' => true]], []],
+            [['tag' => ['eq' => 'y']], ['b']],
+            [['tag' => ['neq' => 'x']], ['b', 'c', 'd']],
+            [['tag' => ['neq' => null]], ['a', 'b']],
+            [['tag' => ['in' => ['x', 'y']]], ['a', 'b']],
+            [['tag' => ['nin' => ['x']]], ['b', 'c', 'd']],
+            [['tag' => ['nin' => ['x', null]]], ['b']],
+            [['tag' => ['in' => 'x']], []],
+            [['tag' => ['nin' => 'x']], []],
+            // List-valued metadata matches on its elements.
+            [['tags' => 'q'], ['a', 'b']],
+            [['tags' => 'hr'], ['b']],
+            [['tags' => ['hr', 'p']], ['a', 'b']],
+            [['tags' => ['in' => ['legal']]], []],
+            [['tags' => ['nin' => ['hr']]], ['a', 'c', 'd']],
+            [['tags' => ['neq' => 'q']], ['c', 'd']],
+            [['tags' => null], ['c']],
+            [['tags' => ['neq' => null]], ['a', 'b', 'd']],
+            [['tags' => 1], []],
+            [['years' => ['gte' => 2025]], ['b']],
+            [['years' => ['lt' => 2020]], ['a']],
+            [['dates' => ['gt' => '2026-01-01']], ['d']],
+        ];
 
-        // The in-memory matcher agrees on every case above.
-        foreach ([['tag' => null], ['tag' => ['nin' => ['x', null]]], ['year' => ['gte' => 2024]], ['num' => '1']] as $filters) {
-            $memory = new InMemoryVectorStore;
-            $memory->createNamespace('docs', 3);
-            $memory->upsert('docs', [
-                new VectorRecord('a', [1.0, 0.0, 0.0], ['tenant_id' => 't1', 'year' => 2023, 'tag' => 'x']),
-                new VectorRecord('b', [1.0, 0.1, 0.0], ['tenant_id' => 't1', 'year' => 2024, 'tag' => 'y']),
-                new VectorRecord('c', [1.0, 0.2, 0.0], ['tenant_id' => 't1', 'year' => '2025', 'tag' => null, 'num' => '1']),
-                new VectorRecord('d', [1.0, 0.3, 0.0], ['tenant_id' => 't1', 'num' => 1]),
-            ]);
-            $memoryIds = array_map(static fn ($h) => $h->id, $memory->search('docs', [1.0, 0.0, 0.0], new RetrievalQuery('q', topK: 10, filters: $filters, tenantId: 't1')));
-            sort($memoryIds);
-
-            expect($memoryIds)->toBe($ids($filters));
+        foreach ($cases as [$filters, $expected]) {
+            $label = json_encode($filters);
+            expect($ids($this->store, $filters))->toBe($expected, "pgvector {$label}")
+                ->and($ids($memory, $filters))->toBe($expected, "memory {$label}");
         }
     });
 
