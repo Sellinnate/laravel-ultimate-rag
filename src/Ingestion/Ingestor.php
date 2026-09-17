@@ -13,6 +13,7 @@ use Sellinnate\RagEngine\Events\DocumentIngested;
 use Sellinnate\RagEngine\Exceptions\RagException;
 use Sellinnate\RagEngine\Managers\VectorStoreManager;
 use Sellinnate\RagEngine\Models\Document;
+use Sellinnate\RagEngine\Models\EmbeddingRecord;
 use Sellinnate\RagEngine\Models\ShreddedTenant;
 use Sellinnate\RagEngine\Security\EnvelopeEncrypter;
 use Sellinnate\RagEngine\Tenancy\TenantContext;
@@ -25,6 +26,9 @@ use Sellinnate\RagEngine\Tenancy\TenantQuota;
  */
 final class Ingestor
 {
+    /** Insert attempts for a keyed source racing identical content (see ingest()). */
+    private const MAX_CREATE_ATTEMPTS = 3;
+
     public function __construct(
         private readonly TenantContext $tenant,
         private readonly EnvelopeEncrypter $encrypter,
@@ -48,61 +52,95 @@ final class Ingestor
         }
 
         $hash = $source->contentHash();
+        $documentKey = $this->explicitDocumentKey($source);
 
-        // Deduplication / idempotent re-ingestion (FR-IN-06).
-        $duplicate = Document::query()
+        // Deduplication / idempotent re-ingestion (FR-IN-06). A source carrying an
+        // explicit `document_key` (e.g. an Eloquent model) only dedupes against
+        // its own logical document, so two records with identical text stay two
+        // separately-scoped documents.
+        $duplicateQuery = Document::query()
             ->where('tenant_id', $tenantId)
             ->where('content_hash', $hash)
-            ->whereNull('soft_deleted_at')
-            ->first();
+            ->whereNull('soft_deleted_at');
+
+        // …and a key-less source never claims a keyed document (e.g. a model's):
+        // it could otherwise overwrite that document's access metadata.
+        if ($documentKey !== null) {
+            $duplicateQuery->where('metadata->document_key', $documentKey);
+        } else {
+            $duplicateQuery->whereNull('metadata->document_key');
+        }
+
+        $duplicate = $duplicateQuery->first();
 
         if ($duplicate instanceof Document) {
-            return $duplicate;
+            return $this->refreshDuplicate($duplicate, $source, $metadata, $documentKey !== null);
         }
 
-        try {
-            return DB::transaction(function () use ($source, $metadata, $tenantId, $hash): Document {
-                // Quota enforced inside the write transaction to narrow the TOCTOU
-                // window against concurrent ingests (FR-MT-04).
-                $this->quota->assertCanIngest($tenantId, $source->size());
+        // A keyed source can race a concurrent ingest of the same bytes under a
+        // DIFFERENT key: both pick the same (tenant, hash, version) and one hits
+        // the unique index without a winner of its own — retry with a fresh
+        // version instead of failing.
+        for ($attempt = 1; ; $attempt++) {
+            try {
+                return $this->create($source, $metadata, $tenantId, $hash);
+            } catch (UniqueConstraintViolationException $e) {
+                // Lost a race with a concurrent ingest of identical content (TOCTOU
+                // between the dedup check and the insert). Return the winner.
+                $winner = Document::query()
+                    ->where('tenant_id', $tenantId)
+                    ->where('content_hash', $hash)
+                    ->whereNull('soft_deleted_at')
+                    ->when(
+                        $documentKey !== null,
+                        fn ($query) => $query->where('metadata->document_key', $documentKey),
+                        fn ($query) => $query->whereNull('metadata->document_key'),
+                    )
+                    ->orderByDesc('version')
+                    ->first();
 
-                $version = $this->resolveVersion($source, $tenantId, $hash);
+                if ($winner instanceof Document) {
+                    return $this->refreshDuplicate($winner, $source, $metadata, $documentKey !== null);
+                }
 
-                [$ref, $dekId] = $this->encryptContent($source->content, $tenantId);
-
-                $document = Document::create([
-                    'tenant_id' => $tenantId,
-                    'source_type' => $source->sourceType,
-                    'content_hash' => $hash,
-                    'mime' => $source->mimeType,
-                    'size' => $source->size(),
-                    'metadata' => $this->buildMetadata($source, $metadata),
-                    'version' => $version,
-                    'status' => 'pending',
-                    'encrypted_content_ref' => $ref,
-                    'dek_id' => $dekId,
-                ]);
-
-                event(new DocumentIngested((string) $document->id, $tenantId));
-
-                return $document;
-            });
-        } catch (UniqueConstraintViolationException $e) {
-            // Lost a race with a concurrent ingest of identical content (TOCTOU
-            // between the dedup check and the insert). Return the winner.
-            $winner = Document::query()
-                ->where('tenant_id', $tenantId)
-                ->where('content_hash', $hash)
-                ->whereNull('soft_deleted_at')
-                ->orderByDesc('version')
-                ->first();
-
-            if ($winner instanceof Document) {
-                return $winner;
+                if ($documentKey === null || $attempt >= self::MAX_CREATE_ATTEMPTS) {
+                    throw $e;
+                }
             }
-
-            throw $e;
         }
+    }
+
+    /**
+     * @param  array<string, mixed>  $metadata
+     */
+    private function create(IngestionSource $source, array $metadata, string $tenantId, string $hash): Document
+    {
+        return DB::transaction(function () use ($source, $metadata, $tenantId, $hash): Document {
+            // Quota enforced inside the write transaction to narrow the TOCTOU
+            // window against concurrent ingests (FR-MT-04).
+            $this->quota->assertCanIngest($tenantId, $source->size());
+
+            $version = $this->resolveVersion($source, $tenantId, $hash);
+
+            [$ref, $dekId] = $this->encryptContent($source->content, $tenantId);
+
+            $document = Document::create([
+                'tenant_id' => $tenantId,
+                'source_type' => $source->sourceType,
+                'content_hash' => $hash,
+                'mime' => $source->mimeType,
+                'size' => $source->size(),
+                'metadata' => $this->buildMetadata($source, $metadata),
+                'version' => $version,
+                'status' => 'pending',
+                'encrypted_content_ref' => $ref,
+                'dek_id' => $dekId,
+            ]);
+
+            event(new DocumentIngested((string) $document->id, $tenantId));
+
+            return $document;
+        });
     }
 
     /**
@@ -164,7 +202,14 @@ final class Ingestor
             $store->deleteByFilter($namespace, ['document_id' => $documentId]);
         }
 
-        DB::transaction(function () use ($document): void {
+        DB::transaction(function () use ($document, $tenantId): void {
+            // Embedding bookkeeping has no FK to its chunk: remove it explicitly
+            // so a purge never leaves orphan records behind (rag:reconcile).
+            $chunkIds = $document->chunks()->pluck('id')->all();
+            foreach (array_chunk($chunkIds, 500) as $batch) {
+                EmbeddingRecord::query()->where('tenant_id', $tenantId)->whereIn('chunk_id', $batch)->delete();
+            }
+
             $document->chunks()->delete();
             $document->delete();
         });
@@ -174,6 +219,90 @@ final class Ingestor
             // now-deleted row — identify it by the document, not the shared KEK.
             event(new DataShredded($documentId, $tenantId, 'document'));
         }
+    }
+
+    /**
+     * Keep an unchanged-content document in step with its incoming metadata.
+     *
+     * - A keyed duplicate (same logical document) takes the incoming metadata
+     *   (provenance is kept).
+     * - An un-keyed duplicate only takes an explicitly supplied, different
+     *   `rag_vector_metadata` (last writer wins); other metadata is untouched.
+     *
+     * When the metadata propagated into vector payloads changed, the document is
+     * flagged `pending` so the caller re-processes it and no vector keeps stale
+     * (e.g. access-control) metadata.
+     *
+     * @param  array<string, mixed>  $metadata
+     */
+    private function refreshDuplicate(Document $document, IngestionSource $source, array $metadata, bool $keyed): Document
+    {
+        $current = $document->metadata ?? [];
+        $incoming = [...$source->metadata, ...$metadata];
+
+        if (! $keyed && ! array_key_exists('rag_vector_metadata', $incoming)) {
+            return $document;
+        }
+
+        $vectorChanged = array_key_exists('rag_vector_metadata', $incoming)
+            && self::canonical($current['rag_vector_metadata'] ?? []) !== self::canonical($incoming['rag_vector_metadata']);
+
+        if ($keyed) {
+            // The logical document's latest declaration is authoritative (keys
+            // it no longer declares are dropped). Provenance describes the
+            // stored bytes, which did not change.
+            $updated = $incoming;
+            unset($updated['provenance']);
+            if (array_key_exists('provenance', $current)) {
+                $updated['provenance'] = $current['provenance'];
+            }
+        } else {
+            $updated = [...$current, 'rag_vector_metadata' => $incoming['rag_vector_metadata']];
+        }
+
+        if (self::canonical($updated) === self::canonical($current)) {
+            return $document;
+        }
+
+        $attributes = ['metadata' => $updated];
+
+        if ($vectorChanged && $document->status === 'indexed') {
+            $attributes['status'] = 'pending';
+        }
+
+        $document->forceFill($attributes)->save();
+
+        return $document;
+    }
+
+    private function explicitDocumentKey(IngestionSource $source): ?string
+    {
+        $key = $source->metadata['document_key'] ?? null;
+
+        return is_string($key) && $key !== '' ? $key : null;
+    }
+
+    /**
+     * Order-insensitive (for maps) representation used to compare metadata.
+     */
+    private static function canonical(mixed $value): string
+    {
+        return json_encode(self::sortRecursive($value), JSON_THROW_ON_ERROR);
+    }
+
+    private static function sortRecursive(mixed $value): mixed
+    {
+        if (! is_array($value)) {
+            return $value;
+        }
+
+        $value = array_map(self::sortRecursive(...), $value);
+
+        if (! array_is_list($value)) {
+            ksort($value);
+        }
+
+        return $value;
     }
 
     private function resolveVersion(IngestionSource $source, string $tenantId, string $hash): int

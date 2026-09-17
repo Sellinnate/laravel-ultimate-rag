@@ -71,8 +71,10 @@ final class EmbeddableDefinition
      * - `$mimeType` is optional — detected from the file when not given.
      * - Null/blank paths are ignored (safe for nullable upload columns).
      *
-     * Non-embeddable files (zip, executables, images, unreadable or too large)
-     * are handled per `rag-engine.eloquent.on_unparsable_file` (skip | fail).
+     * Images (PNG/JPEG/WebP/TIFF) are embedded through the configured OCR
+     * engine (`defaults.ocr`). Non-embeddable files (zip, executables, images
+     * without OCR, unreadable or too large) are handled per
+     * `rag-engine.eloquent.on_unparsable_file` (skip | fail).
      */
     public function addFile(string $label, ?string $path, ?string $disk = null, ?string $mimeType = null): self
     {

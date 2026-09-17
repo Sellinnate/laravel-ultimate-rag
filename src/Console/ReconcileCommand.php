@@ -15,13 +15,18 @@ final class ReconcileCommand extends Command
 {
     use NormalizesInput;
 
-    protected $signature = 'rag:reconcile {tenant : The tenant id}';
+    protected $signature = 'rag:reconcile {tenant : The tenant id} {--prune : Delete orphan embedding records}';
 
     protected $description = 'Report chunks missing vectors and orphan embeddings for a tenant';
 
     public function handle(Reconciler $reconciler): int
     {
         $tenant = $this->stringArgument('tenant');
+
+        if ($this->option('prune')) {
+            $this->info('Pruned '.$reconciler->pruneOrphans($tenant).' orphan embedding record(s).');
+        }
+
         $report = $reconciler->reconcile($tenant);
 
         $this->table(['Issue', 'Count'], [

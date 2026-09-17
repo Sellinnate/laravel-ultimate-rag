@@ -1,0 +1,41 @@
+<?php
+
+declare(strict_types=1);
+
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Schema;
+
+/**
+ * KEK store for the local KMS driver when `rag-engine.kms.local.store` is
+ * `database`. Rows hold master-key-encrypted KEK material, keyed by the SHA-256
+ * of the key id. Created on `rag-engine.kms.local.connection` (null = default).
+ */
+return new class extends Migration
+{
+    public function up(): void
+    {
+        Schema::connection($this->kmsConnection())->create($this->kmsTable(), function (Blueprint $table) {
+            $table->string('key_hash', 64)->primary();
+            $table->text('material');
+            $table->timestamps();
+        });
+    }
+
+    public function down(): void
+    {
+        Schema::connection($this->kmsConnection())->dropIfExists($this->kmsTable());
+    }
+
+    private function kmsConnection(): ?string
+    {
+        $connection = config('rag-engine.kms.local.connection');
+
+        return is_string($connection) && $connection !== '' ? $connection : null;
+    }
+
+    private function kmsTable(): string
+    {
+        return (string) config('rag-engine.tables.kms_keys', 'rag_kms_keys');
+    }
+};

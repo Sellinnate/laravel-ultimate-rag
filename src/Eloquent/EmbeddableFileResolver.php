@@ -15,7 +15,8 @@ use Sellinnate\RagEngine\Parsing\ParserManager;
  * with the registered parsers, and returns the extracted text to fold into the
  * model's embedding.
  *
- * Non-embeddable files — unsupported binaries (zip, executables, images),
+ * Non-embeddable files — unsupported binaries (zip, executables, images when
+ * no OCR engine is configured),
  * missing/unreadable files, empty files, or files over the size limit — are
  * handled by the `on_unparsable_file` policy: `skip` (log a warning and embed
  * the rest of the model) or `fail` (throw {@see UnsupportedFileException}).
@@ -36,6 +37,13 @@ final class EmbeddableFileResolver
         'tsv' => 'text/csv',
         'json' => 'application/json',
         'xml' => 'application/xml',
+        // Images are only embeddable when an OCR engine is configured.
+        'png' => 'image/png',
+        'jpg' => 'image/jpeg',
+        'jpeg' => 'image/jpeg',
+        'webp' => 'image/webp',
+        'tif' => 'image/tiff',
+        'tiff' => 'image/tiff',
     ];
 
     public function __construct(

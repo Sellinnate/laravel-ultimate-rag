@@ -240,12 +240,20 @@ return [
     'kms' => [
         'local' => [
             'driver' => 'local',
-            // 'array' (in-memory, default) or 'file' (persisted to `keystore`).
+            // Where the tenant KEKs live:
+            //   'array'    — in-memory, lost at the end of the process (tests/dev)
+            //   'file'     — one file per KEK under `keystore` (single node only)
+            //   'database' — the `rag_kms_keys` table (multi-node / ephemeral
+            //                disks such as Laravel Cloud). Requires `master_key`.
             'store' => env('RAG_KMS_STORE', 'array'),
-            // When set with store=file, the KEK material is encrypted at rest with
-            // this master secret (AES-256-GCM); otherwise it is base64-only (dev).
+            // Master secret (>= 32 chars) that encrypts KEK material at rest
+            // (AES-256-GCM). REQUIRED for store=database (fails closed without
+            // it); optional for store=file (base64-only when unset — dev only).
             'master_key' => env('RAG_KMS_MASTER_KEY'),
             'keystore' => env('RAG_KMS_KEYSTORE', storage_path('rag-engine/kms')),
+            // store=database: DB connection holding `rag_kms_keys` (null = the
+            // app default). The table comes from the package migrations.
+            'connection' => env('RAG_KMS_CONNECTION'),
         ],
         // AWS KMS (production BYOK). Requires aws/aws-sdk-php. One CMK per tenant
         // (alias alias/{prefix}{tenant}); credentials resolve via the AWS chain
@@ -327,11 +335,35 @@ return [
     'security' => [
         // Envelope-encrypt source content, chunk text and sensitive metadata.
         'encryption_enabled' => env('RAG_ENCRYPTION_ENABLED', true),
+        // Copy chunk plaintext into the vector-store payload (and pgvector's
+        // `content` column)? null = auto: only when encryption is DISABLED, so
+        // an encrypted deployment keeps no plaintext in the vector store and
+        // search decrypts hit text from `rag_chunks`. true = always (pre-v1.3
+        // behaviour), false = never. Existing vectors keep their text until
+        // `php artisan rag:reindex {tenant}`.
+        'vector_payload_content' => env('RAG_VECTOR_PAYLOAD_CONTENT'),
         // AEAD cipher used for content encryption with the DEK.
         'cipher' => 'aes-256-gcm',
         // PII redaction ON by default (FR-PP-03, NFR-CO-04).
         'pii_redaction_enabled' => env('RAG_PII_REDACTION', true),
         'pii_strategy' => env('RAG_PII_STRATEGY', 'mask'), // mask|tokenize
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Audit log (NFR-CO-03)
+    |--------------------------------------------------------------------------
+    |
+    | The audit log is append-only and hash-chained. The package migration also
+    | installs database WORM triggers that refuse any UPDATE/DELETE on
+    | `rag_audit_entries`. Some managed MySQL hosts reject CREATE TRIGGER (no
+    | SUPER privilege / binary-logging restrictions): set this to false BEFORE
+    | running the migration there. The application-level immutability guard on
+    | the AuditEntry model always stays on.
+    |
+    */
+    'audit' => [
+        'db_triggers' => env('RAG_AUDIT_DB_TRIGGERS', true),
     ],
 
     /*
@@ -464,5 +496,7 @@ return [
         'audit_entries' => 'rag_audit_entries',
         'audit_anchors' => 'rag_audit_anchors',
         'shredded_tenants' => 'rag_shredded_tenants',
+        // Local KMS KEKs when kms.local.store = database (own migration).
+        'kms_keys' => 'rag_kms_keys',
     ],
 ];

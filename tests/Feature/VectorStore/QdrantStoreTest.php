@@ -115,6 +115,61 @@ it('translates range and list filters', function () {
     });
 });
 
+it('translates eq, neq, in, nin and null filters', function () {
+    Http::fake(['*/points/search' => Http::response(['result' => []])]);
+
+    qdrant()->search('docs', [0.1, 0.2], new RetrievalQuery('q', filters: [
+        'scope' => ['in' => ['internal', 'contracts']],
+        'status' => ['neq' => 'archived', 'nin' => ['draft', null]],
+        'kind' => ['eq' => 'note'],
+        'owner' => null,
+        'tag' => ['x', null],
+        'lang' => ['eq' => null],
+    ], tenantId: 't1'));
+
+    Http::assertSent(function ($request) {
+        $filter = $request['filter'];
+
+        return $filter['must'] === [
+            ['key' => 'scope', 'match' => ['any' => ['internal', 'contracts']]],
+            ['key' => 'kind', 'match' => ['value' => 'note']],
+            ['is_empty' => ['key' => 'owner']],
+            ['should' => [['key' => 'tag', 'match' => ['any' => ['x']]], ['is_empty' => ['key' => 'tag']]]],
+            ['is_empty' => ['key' => 'lang']],
+            ['key' => 'tenant_id', 'match' => ['value' => 't1']],
+        ] && $filter['must_not'] === [
+            ['key' => 'status', 'match' => ['value' => 'archived']],
+            ['should' => [['key' => 'status', 'match' => ['any' => ['draft']]], ['is_empty' => ['key' => 'status']]]],
+        ];
+    });
+});
+
+it('returns nothing without calling Qdrant for an empty IN list', function () {
+    Http::fake();
+
+    expect(qdrant()->search('docs', [0.1], new RetrievalQuery('q', filters: ['scope' => ['in' => []]], tenantId: 't1')))->toBe([])
+        ->and(qdrant()->search('docs', [0.1], new RetrievalQuery('q', filters: ['scope' => []], tenantId: 't1')))->toBe([]);
+
+    qdrant()->deleteByFilter('docs', ['scope' => ['in' => []]]);
+    qdrant()->deleteByFilter('docs', []);
+
+    Http::assertNothingSent();
+});
+
+it('ignores an empty NIN list and rejects malformed operands', function () {
+    Http::fake(['*/points/search' => Http::response(['result' => []])]);
+
+    qdrant()->search('docs', [0.1], new RetrievalQuery('q', filters: ['scope' => ['nin' => []]]));
+    Http::assertSent(fn ($request) => ! isset($request['filter']));
+
+    expect(fn () => qdrant()->search('docs', [0.1], new RetrievalQuery('q', filters: ['scope' => ['in' => 'x']])))
+        ->toThrow(RagException::class, 'needs a list')
+        ->and(fn () => qdrant()->search('docs', [0.1], new RetrievalQuery('q', filters: ['date' => ['gte' => '2026-01-01']])))
+        ->toThrow(RagException::class, 'numeric operand')
+        ->and(fn () => qdrant()->search('docs', [0.1], new RetrievalQuery('q', filters: ['a' => ['like' => 'x']])))
+        ->toThrow(RagException::class, 'Unsupported Qdrant filter operator [like]');
+});
+
 it('throws on a failed search', function () {
     Http::fake(['*/points/search' => Http::response('boom', 500)]);
 

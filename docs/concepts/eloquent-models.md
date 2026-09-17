@@ -61,13 +61,73 @@ model's embedded representation:
 | `include(?Embeddable $related, ?string $as)` | Compose one related embeddable (recursive). Null is ignored. |
 | `includeMany(iterable $related, ?string $as)` | Compose a collection of related embeddables. |
 | `addFile(string $label, ?string $path, ?string $disk, ?string $mime)` | Embed the **text of an uploaded file** (PDF, DOCX…). See [file fields](#file-fields). |
-| `metadata(array $meta)` | Provenance metadata stored on the document. |
+| `metadata(array $meta)` | Metadata stored on the document. Scalar and list-of-scalar values are also copied into **every vector**, so you can [filter on them](#filterable-metadata). |
 | `documentKey(string $key)` | Override the logical key (defaults to the model's `type:id`). |
 | `options(array $opts)` | Per-model chunking/indexing options. |
 
 ::: callout tip "Allowlist, never every attribute"
 Only the fields you `add()` are embedded — secrets (password hashes, tokens)
 never reach the index or the LLM unless you explicitly put them there.
+:::
+
+## Filterable metadata & access scopes {#filterable-metadata}
+
+Whatever you pass to `metadata()` is stored on the document, and every value that
+is a **scalar** (string, int, float, bool) or a **list of scalars** is also
+written into **every vector** of the model. That lets you filter searches on it,
+which is how you implement access control on top of the index:
+
+```php
+class Note extends Model implements Embeddable
+{
+    use HasEmbeddings;
+
+    public function toEmbeddable(): EmbeddableDefinition
+    {
+        return EmbeddableDefinition::make()
+            ->add('Title', $this->title)
+            ->add('Body', $this->body)
+            ->metadata([
+                'scope' => $this->scope,           // e.g. 'internal', 'contracts', 'hr'
+                'team_id' => $this->team_id,
+                'tags' => $this->tags ?? [],       // a list of strings is fine
+            ]);
+    }
+}
+
+// Only return what the current user may see:
+$hits = Rag::search('renewal terms')
+    ->where('scope', ['in' => $user->allowedScopes()])   // e.g. ['internal', 'contracts']
+    ->get();
+```
+
+Rules:
+
+- **Only scalars and lists of scalars reach the vectors.** `null`, nested maps
+  and objects are kept on the document only, and you can't filter on them.
+- **System keys always win.** `tenant_id`, `document_id`, `chunk_id`,
+  `parent_chunk_id`, `content`, `is_parent` and the model identity
+  (`embeddable_type`, `embeddable_id`, `embeddable_key`) can't be overridden by
+  your metadata. Tenant isolation is never affected by what a model declares.
+- **Changing only the metadata re-indexes the vectors.** If a note moves from
+  `internal` to `contracts` but its text stays the same, the next sync updates
+  the document and rebuilds its vectors, so no vector keeps the old scope. With
+  an embedding cache, the rebuild doesn't re-embed anything.
+- **Two models with identical text are two documents.** Each keeps its own
+  metadata and identity.
+
+::: callout warning "Filter on every query"
+Metadata filters are something **your** code applies. A search without
+`->where('scope', ...)` returns hits from every scope in the tenant. Build the
+filter in one place (a query scope, a service or a policy) so nobody forgets it.
+The allowed values must come from your authorization logic, never from user
+input.
+:::
+
+::: callout info "Upgrading from v1.2 or earlier"
+Vectors indexed before v1.3 don't carry the declared metadata yet. Run
+`php artisan rag:reindex {tenant}` once (or re-save the models) so filters
+match them.
 :::
 
 ## Recursive embedding
@@ -118,10 +178,18 @@ PDF parsing uses the optional `smalot/pdfparser` package — run
 non-embeddable (see below). DOCX/HTML/CSV/JSON/XML/Markdown/text need nothing extra.
 :::
 
-### Non-embeddable files (zip, executables, images…)
+### Images
 
-Not every file can become text. A `.zip`, an executable, an image, a corrupt
-file, a missing path, or one over the size limit **can't be embedded** — and the
+Image fields (PNG, JPEG, WebP, TIFF) are embedded through the configured **OCR
+engine**: the text it reads becomes part of the model. With the default `null`
+OCR engine, images are non-embeddable (see below). See
+**[Parsing → Images & OCR](/concepts/parsing#images-ocr)**.
+
+### Non-embeddable files (zip, executables, images without OCR…)
+
+Not every file can become text. A `.zip`, an executable, an image when no OCR
+engine is configured, a corrupt file, a missing path, or one over the size limit
+**can't be embedded** — and the
 engine never sends raw binary to an embedding provider. What happens is governed
 by `rag-engine.eloquent.on_unparsable_file`:
 
@@ -165,7 +233,9 @@ index:
 - **restored** (soft deletes) → re-indexed.
 
 Unchanged content is detected by checksum, so a save that doesn't affect the
-embeddable representation is a cheap no-op.
+embeddable representation is a cheap no-op. A change to the
+[filterable metadata](#filterable-metadata) alone still rebuilds the vectors.
+Pass `['force' => true]` to `syncEmbedding()` to rebuild them regardless.
 
 You can always drive it manually:
 
@@ -247,6 +317,7 @@ origin:
 | `source_type` | `eloquent`, `url`, `upload`, `text`, `storage`. |
 | `source_ref` | A human reference: the URL, filename or logical key. |
 | `embeddable_type` / `embeddable_id` | The model identity (model sources only). |
+| *your metadata* | Scalar / list values from `metadata()` (models) or `rag_vector_metadata` (other sources, see [Ingesting content](/guides/ingestion#vector-metadata)). |
 
 ```php
 $hit->metadata['source_type']; // 'url'

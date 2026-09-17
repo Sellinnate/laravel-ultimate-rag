@@ -146,7 +146,12 @@ return new class extends Migration
         // Enforce audit immutability at the database layer (NFR-CO-03). Model-level
         // guards alone are bypassable via mass-update, *Quietly() and DB::table().
         // WORM triggers refuse every UPDATE/DELETE regardless of the access path.
-        $this->guardAuditTable($tables['audit_entries']);
+        // Some managed MySQL hosts reject CREATE TRIGGER (no SUPER privilege /
+        // binary-logging restrictions): set RAG_AUDIT_DB_TRIGGERS=false there.
+        // The application-level guard on the AuditEntry model stays in place.
+        if (filter_var(config('rag-engine.audit.db_triggers', true), FILTER_VALIDATE_BOOLEAN)) {
+            $this->guardAuditTable($tables['audit_entries']);
+        }
     }
 
     public function down(): void
@@ -155,9 +160,15 @@ return new class extends Migration
 
         $this->unguardAuditTable($tables['audit_entries']);
 
+        // The KMS key table has its own migration (and optional connection).
+        unset($tables['kms_keys']);
+
         foreach (array_reverse($tables) as $table) {
             Schema::dropIfExists($table);
         }
+
+        Schema::dropIfExists('rag_vectors');
+        Schema::dropIfExists('rag_vector_namespaces');
     }
 
     private function guardAuditTable(string $table): void

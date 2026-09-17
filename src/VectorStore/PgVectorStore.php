@@ -20,6 +20,14 @@ use Sellinnate\RagEngine\Support\MetadataMatcher;
  * selection run in the database against an HNSW index — not in PHP. The schema
  * (extension + table + index) is created lazily on first use.
  *
+ * Metadata filters are compiled to SQL on the `metadata` jsonb column
+ * ({@see PgVectorFilterCompiler}) and applied BEFORE `ORDER BY … LIMIT`, so a
+ * selective filter (e.g. an access `scope`) still returns topK hits. The HNSW
+ * candidate list (`hnsw.ef_search`) is raised to cover the requested limit; a
+ * filtered query uses iterative index scans on pgvector >= 0.8 and an exact
+ * scan on older versions (see {@see tuneIndexScan()}).
+ * The PHP {@see MetadataMatcher} still runs on every row as a safety net.
+ *
  * Single fixed embedding dimension per store (one embedding model per
  * deployment): mixed dimensions need separate stores, the portable `database`
  * driver, or Qdrant.
@@ -40,7 +48,14 @@ final class PgVectorStore implements VectorStore
         'dot' => ['<#>', 'vector_ip_ops'],
     ];
 
+    /** pgvector caps hnsw.ef_search at 1000. */
+    private const MAX_EF_SEARCH = 1000;
+
     private bool $schemaReady = false;
+
+    private ?string $extensionVersion = null;
+
+    private readonly PgVectorFilterCompiler $filters;
 
     public function __construct(
         private readonly ConnectionResolverInterface $db,
@@ -49,7 +64,9 @@ final class PgVectorStore implements VectorStore
         private readonly int $dimensions = 1536,
         private readonly string $metric = 'cosine',
         private readonly string $index = 'hnsw',
-    ) {}
+    ) {
+        $this->filters = new PgVectorFilterCompiler;
+    }
 
     public function createNamespace(string $namespace, int $dimensions, string $metric = 'cosine'): void
     {
@@ -128,7 +145,7 @@ final class PgVectorStore implements VectorStore
         [$operator] = self::METRICS[$this->metric];
         $vectorParam = $this->toVector($vector);
 
-        // Over-fetch so rich metadata operators (applied in PHP) still fill topK.
+        // Headroom for the score threshold and the PHP safety net.
         $limit = max($query->topK * 5, $query->topK);
 
         $sql = "SELECT id, metadata, content, embedding::text AS emb, (embedding {$operator} ?::vector) AS distance "
@@ -140,6 +157,13 @@ final class PgVectorStore implements VectorStore
             $bindings[] = $query->tenantId;
         }
 
+        // Metadata filters run in SQL, before ORDER BY/LIMIT (no under-fill).
+        if ($query->filters !== []) {
+            $compiled = $this->filters->compile($query->filters);
+            $sql .= ' AND ('.$compiled['sql'].')';
+            array_push($bindings, ...$compiled['bindings']);
+        }
+
         $sql .= " ORDER BY embedding {$operator} ?::vector LIMIT ?";
         $bindings[] = $vectorParam;
         $bindings[] = $limit;
@@ -149,8 +173,24 @@ final class PgVectorStore implements VectorStore
             $filters['tenant_id'] = $query->tenantId;
         }
 
+        $conn = $this->conn();
+        $rows = $conn->transaction(function () use ($conn, $sql, $bindings, $limit, $query): array {
+            // SET LOCAL lasts until the OUTERMOST transaction ends; when this
+            // runs as a savepoint inside the caller's transaction, put the
+            // caller's settings back afterwards.
+            $previous = $this->captureIndexScanSettings($conn);
+
+            try {
+                $this->tuneIndexScan($conn, $limit, $query->filters !== []);
+
+                return $conn->select($sql, $bindings);
+            } finally {
+                $this->restoreIndexScanSettings($conn, $previous);
+            }
+        });
+
         $hits = [];
-        foreach ($this->conn()->select($sql, $bindings) as $row) {
+        foreach ($rows as $row) {
             /** @var array<string, mixed> $metadata */
             $metadata = json_decode((string) $row->metadata, true) ?: [];
 
@@ -173,13 +213,12 @@ final class PgVectorStore implements VectorStore
                 chunkId: isset($metadata['chunk_id']) ? (string) $metadata['chunk_id'] : null,
                 vector: $this->parseVector((string) $row->emb),
             );
-
-            if (count($hits) >= $query->topK) {
-                break;
-            }
         }
 
-        return $hits;
+        // Relaxed-order iterative scans may return near-sorted rows.
+        usort($hits, static fn (SearchHit $a, SearchHit $b): int => $b->score <=> $a->score);
+
+        return array_slice($hits, 0, max(0, $query->topK));
     }
 
     public function delete(string $namespace, array $ids): void
@@ -203,6 +242,11 @@ final class PgVectorStore implements VectorStore
             $builder->where('tenant_id', $filter['tenant_id'])->delete();
 
             return;
+        }
+
+        if ($filter !== []) {
+            $compiled = $this->filters->compile($filter);
+            $builder->whereRaw('('.$compiled['sql'].')', $compiled['bindings']);
         }
 
         $ids = [];
@@ -229,6 +273,83 @@ final class PgVectorStore implements VectorStore
     public function name(): string
     {
         return 'pgvector';
+    }
+
+    /**
+     * Make a filtered ANN query return the full LIMIT. `SET LOCAL` confines
+     * every setting to the surrounding transaction.
+     *
+     * - HNSW returns at most `hnsw.ef_search` (default 40) candidates, so it
+     *   is raised to cover the LIMIT.
+     * - A metadata filter is applied AFTER the index scan. pgvector >= 0.8
+     *   keeps scanning the index until the LIMIT is filled (iterative scans);
+     *   older versions cannot, so filtered queries use an exact scan there
+     *   (correct results over speed — upgrade pgvector for large corpora).
+     */
+    private function tuneIndexScan(ConnectionInterface $conn, int $limit, bool $filtered): void
+    {
+        if ($this->index === 'hnsw') {
+            $efSearch = min(self::MAX_EF_SEARCH, max(40, $limit));
+            $conn->statement("SET LOCAL hnsw.ef_search = {$efSearch}");
+        }
+
+        if (! $filtered) {
+            return;
+        }
+
+        if (version_compare($this->extensionVersion($conn), '0.8.0', '<')) {
+            $conn->statement('SET LOCAL enable_indexscan = off');
+
+            return;
+        }
+
+        $conn->statement($this->index === 'ivfflat'
+            ? 'SET LOCAL ivfflat.iterative_scan = relaxed_order'
+            : 'SET LOCAL hnsw.iterative_scan = strict_order');
+    }
+
+    /**
+     * The settings {@see tuneIndexScan()} may change, as currently effective.
+     *
+     * @return array<string, string|null>
+     */
+    private function captureIndexScanSettings(ConnectionInterface $conn): array
+    {
+        $names = ['hnsw.ef_search', 'enable_indexscan'];
+
+        if (version_compare($this->extensionVersion($conn), '0.8.0', '>=')) {
+            $names[] = $this->index === 'ivfflat' ? 'ivfflat.iterative_scan' : 'hnsw.iterative_scan';
+        }
+
+        $settings = [];
+        foreach ($names as $name) {
+            $row = $conn->selectOne('SELECT current_setting(?, true) AS value', [$name]);
+            $settings[$name] = is_object($row) && is_string($row->value ?? null) ? $row->value : null;
+        }
+
+        return $settings;
+    }
+
+    /**
+     * @param  array<string, string|null>  $settings
+     */
+    private function restoreIndexScanSettings(ConnectionInterface $conn, array $settings): void
+    {
+        foreach ($settings as $name => $value) {
+            if ($value !== null && $value !== '') {
+                $conn->select('SELECT set_config(?, ?, true)', [$name, $value]);
+            }
+        }
+    }
+
+    private function extensionVersion(ConnectionInterface $conn): string
+    {
+        if ($this->extensionVersion === null) {
+            $row = $conn->selectOne("SELECT extversion FROM pg_extension WHERE extname = 'vector'");
+            $this->extensionVersion = is_object($row) && is_string($row->extversion ?? null) ? $row->extversion : '0.0.0';
+        }
+
+        return $this->extensionVersion;
     }
 
     private function ensureSchema(): void

@@ -61,6 +61,10 @@ final class ModelEmbedder
         $identity = $this->identity($model, $key);
         $namespace = $this->namespace($options);
 
+        // `force` re-processes even when nothing changed (e.g. `rag:reindex`).
+        $force = (bool) ($options['force'] ?? false);
+        unset($options['force']);
+
         $source = new IngestionSource(
             content: $compiled->content,
             mimeType: 'text/plain',
@@ -72,9 +76,12 @@ final class ModelEmbedder
                 'embeddable_id' => $identity['id'],
                 'embeddable_key' => $key,
                 'included_keys' => $compiled->includedKeys,
-                // Propagated verbatim into every vector payload (FR-RT-06), so a
-                // retrieved vector traces back to its model with no extra query.
+                // Propagated into every vector payload (FR-RT-06): the declared
+                // filterable metadata (e.g. an access `scope`) plus the model
+                // identity, so a retrieved vector can be filtered on and traced
+                // back to its model with no extra query. Identity keys win.
                 'rag_vector_metadata' => [
+                    ...self::filterableMetadata($compiled->metadata),
                     'embeddable_type' => $identity['type'],
                     'embeddable_id' => $identity['id'],
                     'embeddable_key' => $key,
@@ -84,9 +91,10 @@ final class ModelEmbedder
 
         $document = $this->ingestor->ingest($source);
 
-        // Re-process only when something actually changed (the ingestor dedupes
-        // unchanged content), keeping save-driven syncs cheap.
-        if ($document->wasRecentlyCreated || $document->status !== 'indexed') {
+        // Re-process only when something actually changed — new content, or
+        // changed vector metadata (the ingestor flags the document `pending`) —
+        // keeping save-driven syncs cheap.
+        if ($force || $document->wasRecentlyCreated || $document->status !== 'indexed') {
             $this->pipeline->process($document, ['namespace' => $namespace, ...$compiled->options, ...$options]);
         }
 
@@ -101,16 +109,28 @@ final class ModelEmbedder
      */
     public function forget(Model $model): void
     {
-        $this->forgetByKey($this->identity($model)['key']);
+        $identity = $this->identity($model);
+
+        $this->forgetByIdentity($identity['type'], $identity['id']);
     }
 
     /**
      * Remove a model from the index by its morph identity (for queued deletes,
-     * where the row may already be gone).
+     * where the row may already be gone). Matches both the default `type:id`
+     * document key and the stored `embeddable_*` identity, so models with a
+     * custom {@see EmbeddableDefinition::documentKey()} are removed too.
      */
     public function forgetByIdentity(string $type, string $id): void
     {
-        $this->forgetByKey($type.':'.$id);
+        Document::query()
+            ->where('tenant_id', $this->tenant->id())
+            ->where(fn ($query) => $query
+                ->where('metadata->document_key', $type.':'.$id)
+                ->orWhere(fn ($identity) => $identity
+                    ->where('metadata->embeddable_type', $type)
+                    ->where('metadata->embeddable_id', $id)))
+            ->get()
+            ->each(fn (Document $document) => $this->ingestor->purge($document));
     }
 
     /**
@@ -149,6 +169,43 @@ final class ModelEmbedder
         }
 
         return $class::query()->whereKey($id)->first();
+    }
+
+    /**
+     * The subset of declared metadata that can live in a vector payload and be
+     * filtered on: scalar values and lists of scalars. Nulls, maps and objects
+     * stay on the document only.
+     *
+     * @param  array<string, mixed>  $metadata
+     * @return array<string, scalar|list<scalar>>
+     */
+    public static function filterableMetadata(array $metadata): array
+    {
+        $filterable = [];
+
+        foreach ($metadata as $key => $value) {
+            if (is_scalar($value)) {
+                $filterable[$key] = $value;
+
+                continue;
+            }
+
+            if (! is_array($value) || ! array_is_list($value)) {
+                continue;
+            }
+
+            $items = [];
+            foreach ($value as $item) {
+                if (! is_scalar($item)) {
+                    continue 2;
+                }
+                $items[] = $item;
+            }
+
+            $filterable[$key] = $items;
+        }
+
+        return $filterable;
     }
 
     private function asEmbeddable(Model $model): Embeddable

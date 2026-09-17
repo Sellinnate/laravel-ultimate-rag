@@ -14,6 +14,7 @@ use Sellinnate\RagEngine\Console\ClearCacheCommand;
 use Sellinnate\RagEngine\Console\EvaluateCommand;
 use Sellinnate\RagEngine\Console\PurgeCommand;
 use Sellinnate\RagEngine\Console\ReconcileCommand;
+use Sellinnate\RagEngine\Console\ReindexCommand;
 use Sellinnate\RagEngine\Console\RotateKeysCommand;
 use Sellinnate\RagEngine\Console\StatsCommand;
 use Sellinnate\RagEngine\Console\StatusCommand;
@@ -46,6 +47,7 @@ use Sellinnate\RagEngine\Observability\UsageRecorder;
 use Sellinnate\RagEngine\Parsing\CsvParser;
 use Sellinnate\RagEngine\Parsing\DocxParser;
 use Sellinnate\RagEngine\Parsing\HtmlParser;
+use Sellinnate\RagEngine\Parsing\ImageParser;
 use Sellinnate\RagEngine\Parsing\JsonParser;
 use Sellinnate\RagEngine\Parsing\MarkdownParser;
 use Sellinnate\RagEngine\Parsing\ParserManager;
@@ -75,13 +77,14 @@ class RagEngineServiceProvider extends PackageServiceProvider
         $package
             ->name('rag-engine')
             ->hasConfigFile()
-            ->hasMigration('create_rag_engine_tables')
+            ->hasMigrations(['create_rag_engine_tables', 'create_rag_kms_keys_table'])
             ->hasCommands([
                 StatusCommand::class,
                 StatsCommand::class,
                 RotateKeysCommand::class,
                 PurgeCommand::class,
                 ReconcileCommand::class,
+                ReindexCommand::class,
                 ClearCacheCommand::class,
                 EvaluateCommand::class,
             ]);
@@ -183,6 +186,9 @@ class RagEngineServiceProvider extends PackageServiceProvider
         $this->app->singleton(ParserManager::class, function ($app): ParserManager {
             // Registered last-wins, so list specific parsers; PDF only if usable.
             $parsers = [
+                // Images are routed to the configured OCR engine (unsupported
+                // while OCR is the default `null` engine).
+                new ImageParser($app->make(Ocr::class)),
                 new PlainTextParser,
                 new MarkdownParser,
                 new HtmlParser,

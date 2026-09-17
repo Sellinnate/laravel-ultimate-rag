@@ -27,9 +27,21 @@ final class LocalKms implements KeyManagement
 
     public function createKey(string $keyId): void
     {
-        if (! $this->store->has($keyId)) {
-            $this->store->put($keyId, $this->encodeVersions([random_bytes(32)]));
+        if ($this->store->has($keyId)) {
+            return;
         }
+
+        $material = $this->encodeVersions([random_bytes(32)]);
+
+        // Shared stores create atomically so concurrent nodes can't clobber
+        // each other's freshly generated KEK.
+        if ($this->store instanceof AtomicKeyStore) {
+            $this->store->add($keyId, $material);
+
+            return;
+        }
+
+        $this->store->put($keyId, $material);
     }
 
     public function generateDataKey(string $keyId): GeneratedDataKey
@@ -48,13 +60,17 @@ final class LocalKms implements KeyManagement
 
     public function unwrapDataKey(string $keyId, string $wrappedKey): string
     {
-        if (! $this->store->has($keyId)) {
+        // Existence is decided by reading the material itself (a store's get()
+        // may be a locking read that sees keys other nodes just committed).
+        $raw = $this->store->get($keyId);
+
+        if ($raw === null) {
             throw new EncryptionException(
                 "KEK [{$keyId}] does not exist or was crypto-shredded; the data key cannot be unwrapped."
             );
         }
 
-        foreach ($this->versions($keyId) as $kek) {
+        foreach (array_reverse($this->decodeVersions($raw)) as $kek) {
             try {
                 return $this->cipher->decrypt($kek, $wrappedKey);
             } catch (EncryptionException) {
@@ -74,10 +90,24 @@ final class LocalKms implements KeyManagement
 
     public function rotateKey(string $keyId): void
     {
-        $versions = $this->store->has($keyId) ? $this->storedVersions($keyId) : [];
-        $versions[] = random_bytes(32);
+        $append = function (?string $raw): string {
+            $versions = $raw === null ? [] : $this->decodeVersions($raw);
+            $versions[] = random_bytes(32);
 
-        $this->store->put($keyId, $this->encodeVersions($versions));
+            return $this->encodeVersions($versions);
+        };
+
+        // Shared stores rotate atomically, so concurrent rotations can't drop
+        // each other's versions.
+        if ($this->store instanceof AtomicKeyStore) {
+            $this->store->mutate($keyId, $append);
+
+            return;
+        }
+
+        // Read the material (not has()) so a stale "missing" can never replace
+        // the existing versions with a single new one.
+        $this->store->put($keyId, $append($this->store->get($keyId)));
     }
 
     public function destroyKey(string $keyId): void
@@ -96,16 +126,6 @@ final class LocalKms implements KeyManagement
     }
 
     /**
-     * KEK versions in newest-first order, for unwrap trial.
-     *
-     * @return list<string>
-     */
-    private function versions(string $keyId): array
-    {
-        return array_reverse($this->storedVersions($keyId));
-    }
-
-    /**
      * KEK versions as stored: oldest-first, newest appended last.
      *
      * @return list<string>
@@ -118,6 +138,14 @@ final class LocalKms implements KeyManagement
             throw new EncryptionException("KEK [{$keyId}] not found.");
         }
 
+        return $this->decodeVersions($raw);
+    }
+
+    /**
+     * @return list<string> Oldest first.
+     */
+    private function decodeVersions(string $raw): array
+    {
         /** @var list<string> $decoded */
         $decoded = json_decode($raw, true, flags: JSON_THROW_ON_ERROR);
 

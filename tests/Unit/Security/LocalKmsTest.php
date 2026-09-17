@@ -5,6 +5,7 @@ declare(strict_types=1);
 use Sellinnate\RagEngine\Exceptions\EncryptionException;
 use Sellinnate\RagEngine\Security\AeadCipher;
 use Sellinnate\RagEngine\Security\Kms\ArrayKeyStore;
+use Sellinnate\RagEngine\Security\Kms\KeyStore;
 use Sellinnate\RagEngine\Security\Kms\LocalKms;
 
 beforeEach(function () {
@@ -97,4 +98,44 @@ it('createKey is idempotent and does not rotate existing material', function () 
     $this->kms->createKey('k'); // no-op
 
     expect($this->kms->unwrapDataKey('k', $dek->wrapped))->toBe($dek->plaintext);
+});
+
+it('decides existence from the key material, not a possibly stale has()', function () {
+    // A shared store whose has() reads an old snapshot (MySQL REPEATABLE READ)
+    // while get() is a locking read that sees the committed key.
+    $inner = new ArrayKeyStore;
+    $stale = new class($inner) implements KeyStore
+    {
+        public function __construct(private readonly ArrayKeyStore $inner) {}
+
+        public function has(string $keyId): bool
+        {
+            return false;
+        }
+
+        public function get(string $keyId): ?string
+        {
+            return $this->inner->get($keyId);
+        }
+
+        public function put(string $keyId, string $material): void
+        {
+            $this->inner->put($keyId, $material);
+        }
+
+        public function forget(string $keyId): void
+        {
+            $this->inner->forget($keyId);
+        }
+    };
+
+    $writer = new LocalKms($inner, new AeadCipher);
+    $dek = $writer->generateDataKey('tenant-x');
+
+    $reader = new LocalKms($stale, new AeadCipher);
+    expect($reader->unwrapDataKey('tenant-x', $dek->wrapped))->toBe($dek->plaintext);
+
+    // Rotation through the stale view keeps every existing version.
+    $reader->rotateKey('tenant-x');
+    expect($writer->unwrapDataKey('tenant-x', $dek->wrapped))->toBe($dek->plaintext);
 });

@@ -11,6 +11,7 @@ use Sellinnate\RagEngine\Data\RetrievalQuery;
 use Sellinnate\RagEngine\Data\SearchHit;
 use Sellinnate\RagEngine\Data\VectorRecord;
 use Sellinnate\RagEngine\Exceptions\RagException;
+use Sellinnate\RagEngine\Support\MetadataMatcher;
 
 /**
  * Qdrant vector store driver (FR-VS-01, primary). Self-hostable in the EU.
@@ -105,6 +106,10 @@ final class QdrantStore implements VectorStore
         ];
 
         $filter = $this->buildFilter($query);
+        if ($filter === null) {
+            // An empty IN list can never match (e.g. a user with no scopes).
+            return [];
+        }
         if ($filter !== []) {
             $body['filter'] = $filter;
         }
@@ -157,12 +162,14 @@ final class QdrantStore implements VectorStore
     {
         $qdrantFilter = $this->translateFilter($filter);
 
-        if ($qdrantFilter === []) {
+        // Never send an empty filter (it would delete everything), and an
+        // unsatisfiable one matches nothing.
+        if ($qdrantFilter === null || $qdrantFilter === []) {
             return;
         }
 
         $this->request()->post("/collections/{$this->ns($namespace)}/points/delete?wait=true", [
-            'filter' => ['must' => $qdrantFilter],
+            'filter' => $qdrantFilter,
         ]);
     }
 
@@ -179,9 +186,9 @@ final class QdrantStore implements VectorStore
     }
 
     /**
-     * @return array<string, mixed>
+     * @return array<string, mixed>|null Null when the filter can never match.
      */
-    private function buildFilter(RetrievalQuery $query): array
+    private function buildFilter(RetrievalQuery $query): ?array
     {
         $filters = $query->filters;
 
@@ -189,37 +196,127 @@ final class QdrantStore implements VectorStore
             $filters['tenant_id'] = $query->tenantId;
         }
 
-        $must = $this->translateFilter($filters);
-
-        return $must === [] ? [] : ['must' => $must];
+        return $this->translateFilter($filters);
     }
 
     /**
+     * Translate the shared filter grammar (see MetadataMatcher) into Qdrant's
+     * filter DSL: scalars and `eq` → match, lists and `in` → match any,
+     * `neq`/`nin` → must_not, `null` → is_empty, gt/gte/lt/lte → numeric range.
+     *
      * @param  array<string, mixed>  $filters
-     * @return list<array<string, mixed>>
+     * @return array<string, list<array<string, mixed>>>|null Null when unsatisfiable (empty IN list).
      */
-    private function translateFilter(array $filters): array
+    private function translateFilter(array $filters): ?array
     {
-        $conditions = [];
+        $must = [];
+        $mustNot = [];
 
         foreach ($filters as $key => $value) {
-            if (is_array($value) && ! array_is_list($value)) {
-                $range = [];
-                foreach ($value as $op => $operand) {
-                    $range[match ($op) {
-                        'gt' => 'gt', 'gte' => 'gte', 'lt' => 'lt', 'lte' => 'lte',
-                        default => throw new RagException("Unsupported Qdrant filter operator [{$op}]."),
-                    }] = $operand;
+            $key = (string) $key;
+
+            if (! is_array($value)) {
+                $must[] = $this->equals($key, $value);
+
+                continue;
+            }
+
+            if (array_is_list($value)) {
+                $condition = $this->anyOf($key, $value);
+                if ($condition === null) {
+                    return null;
                 }
-                $conditions[] = ['key' => $key, 'range' => $range];
-            } elseif (is_array($value)) {
-                $conditions[] = ['key' => $key, 'match' => ['any' => array_values($value)]];
-            } else {
-                $conditions[] = ['key' => $key, 'match' => ['value' => $value]];
+                $must[] = $condition;
+
+                continue;
+            }
+
+            $range = [];
+            foreach ($value as $op => $operand) {
+                switch ($op) {
+                    case 'gt':
+                    case 'gte':
+                    case 'lt':
+                    case 'lte':
+                        if (! is_int($operand) && ! is_float($operand)) {
+                            throw new RagException("Qdrant range filters need a numeric operand for [{$key}].");
+                        }
+                        $range[$op] = $operand;
+                        break;
+                    case 'eq':
+                        $must[] = $this->equals($key, $operand);
+                        break;
+                    case 'neq':
+                        $mustNot[] = $this->equals($key, $operand);
+                        break;
+                    case 'in':
+                        $condition = $this->anyOf($key, $this->listOperand($key, $op, $operand));
+                        if ($condition === null) {
+                            return null;
+                        }
+                        $must[] = $condition;
+                        break;
+                    case 'nin':
+                        $condition = $this->anyOf($key, $this->listOperand($key, $op, $operand));
+                        if ($condition !== null) {
+                            $mustNot[] = $condition;
+                        }
+                        break;
+                    default:
+                        throw new RagException("Unsupported Qdrant filter operator [{$op}].");
+                }
+            }
+
+            if ($range !== []) {
+                $must[] = ['key' => $key, 'range' => $range];
             }
         }
 
-        return $conditions;
+        return array_filter(['must' => $must, 'must_not' => $mustNot], static fn (array $conditions): bool => $conditions !== []);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function equals(string $key, mixed $value): array
+    {
+        return $value === null
+            ? ['is_empty' => ['key' => $key]]
+            : ['key' => $key, 'match' => ['value' => $value]];
+    }
+
+    /**
+     * Membership condition; null for an empty list (matches nothing).
+     *
+     * @param  array<mixed>  $values
+     * @return array<string, mixed>|null
+     */
+    private function anyOf(string $key, array $values): ?array
+    {
+        $values = array_values($values);
+        $nonNull = array_values(array_filter($values, static fn (mixed $v): bool => $v !== null));
+
+        if ($values === []) {
+            return null;
+        }
+
+        $match = ['key' => $key, 'match' => ['any' => $nonNull]];
+
+        if (count($nonNull) === count($values)) {
+            return $match;
+        }
+
+        $empty = ['is_empty' => ['key' => $key]];
+
+        return $nonNull === [] ? $empty : ['should' => [$match, $empty]];
+    }
+
+    /**
+     * @return array<mixed>
+     */
+    private function listOperand(string $key, string $op, mixed $operand): array
+    {
+        return MetadataMatcher::listOperand($op, $operand);
     }
 
     /**

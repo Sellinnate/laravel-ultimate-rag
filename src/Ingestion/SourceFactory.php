@@ -165,6 +165,10 @@ final class SourceFactory
             'json' => 'application/json',
             'pdf' => 'application/pdf',
             'docx' => 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+            'png' => 'image/png',
+            'jpg', 'jpeg' => 'image/jpeg',
+            'webp' => 'image/webp',
+            'tif', 'tiff' => 'image/tiff',
             default => $this->sniffMime($contents),
         };
     }
