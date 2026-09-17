@@ -2,6 +2,84 @@
 
 All notable changes to `:package_name` will be documented in this file.
 
+## v1.4.0 — chunk quality: document titles, sentence boundaries, PDF clean-up - 2026-09-17
+
+Better chunks: every chunk knows its document, chunks end on sentence boundaries, PDF headers/footers are removed and text keeps its structure.
+
+### New
+
+- **Document title on every chunk.** Each chunk now gets a header: `Document: <title>` (plus `> Section: <heading>` when known). The title comes from, in order:
+  
+  1. the document's `title` metadata: `Rag::ingest($source, ['title' => …])`, or the new **`EmbeddableDefinition::title()`** for Eloquent models (a `title` passed to `metadata()` also works);
+  2. the title stored inside the file;
+  3. the filename.
+  
+  Where the header is used:
+  
+  - It is **embedded** with the chunk text.
+  - It is **scored in hybrid keyword search**, so a chunk that never names its document can still be found by the document's name.
+  - It **precedes each passage in the generation context**, as `(Document: …)`.
+  - It is **not** added to `SearchHit::$content`. You get it separately in `$hit->metadata['context_header']`.
+  
+  The title is PII-redacted before use. Toggle headers with `RAG_CONTEXTUAL_HEADERS`.
+  
+- **Chunks end on sentence boundaries.** A new `SentenceSplitter`, aware of Italian and English text, does not split on:
+  
+  - abbreviations and legal forms: `S.r.l.`, `S.p.A.`, `Dott.`, `Sig.`, `ecc.`, `e.g.`, `i.e.`, `Mr.`
+  - amounts and numbers: `€ 8.400,00`, `3.5`
+  - dates (`17.09.2026`), URLs, e-mail addresses and ellipses
+  
+  Blank lines and bulleted lines always end a sentence. How the strategies split:
+  
+  - `recursive` (still the default): paragraph → sentence → line → word → character.
+  - `sentence`: sentence → line → word → character.
+  - Overlap repeats whole sentences.
+  - A sentence is only cut when that single sentence is longer than `chunk_size`.
+  
+  Add your own abbreviations with `chunking.abbreviations` (all strategies) or `chunkers.<name>.abbreviations` (one strategy). `RAG_CHUNK_SIZE` and `RAG_CHUNK_OVERLAP` are now read from `.env`.
+  
+- **PDF clean-up** (`parsing.pdf`, all on by default):
+  
+  - **Repeated lines:** running headers/footers are removed (`RAG_PDF_STRIP_REPEATED_LINES`). A line at the top or bottom of the page counts as repeated when it appears on at least 60% of the pages, ignoring digits and spacing. Tune it with `RAG_PDF_REPEATED_LINE_THRESHOLD`, `…_MIN_PAGES` and `…_EDGE_LINES`.
+  - **Symbol-only lines** such as `→ → →` are dropped (`RAG_PDF_STRIP_SYMBOL_LINES`).
+  - **Wrapped lines** are re-joined, including across page breaks (`RAG_PDF_JOIN_WRAPPED_LINES`).
+  - Invalid settings throw an error at boot.
+  
+- **Structure is kept.** Chunks are exact slices of the source text, with line and paragraph breaks intact. HTML keeps paragraphs, list items and table rows (cells are tab-separated).
+  
+
+### Behaviour changes
+
+- The chunk text of `recursive` and `sentence` is now the exact source slice. Before, pieces were re-joined with spaces and sometimes lost the period at a split.
+- **`sentence` strategy:** `overlap` is now in **characters**, like the other strategies. It used to be a number of sentences, and through `ChunkingService` each chunk advanced by only one sentence. Chunk offsets are now characters (`offset_unit = char`). Recursive and markdown chunks also set `offset_unit = char`.
+- **`markdown` offsets** are now exact source positions. They used to drift after the first section.
+- PDF and HTML text are cleaned as described above.
+- The generation context shows `(Document: …)` before each passage.
+- **New vector payload keys:** chunks and vector payloads now carry `context_header` and the redacted `title`. An Eloquent model's `title` is no longer copied unredacted into `rag_vector_metadata`.
+- **Re-processing on metadata changes:**
+  - Re-ingesting identical content with a different `title` flags the document `pending`, so it is re-processed.
+  - A keyed duplicate is also flagged when it drops a `title` or `rag_vector_metadata` it declared before.
+  
+- PDF headings are **not** detected, because the PDF text layer has no reliable signal for them. They stay on their own line in the text.
+
+### Upgrading from v1.3
+
+1. `composer update sellinnate/rag-engine`. No migration is needed.
+2. Optional: copy the new config keys (`parsing.pdf.*`, `chunking.abbreviations`, and the `env()` calls on `chunking.chunk_size`, `chunk_overlap` and `contextual_headers`). The defaults apply without them.
+3. Optional: add `->title(...)` to your embeddable models.
+4. For each tenant, run `php artisan rag:reindex {tenant}` so existing documents are re-chunked and get headers.
+5. If you use the `sentence` strategy with `overlap` given as a number of sentences, change it to characters.
+
+### Quality
+
+- 629 tests plus 14 pgvector integration tests.
+- PHPStan level 8, Pint, coverage 94.6%.
+- Green on Linux and Windows × PHP 8.3/8.4/8.5 × Laravel 12/13.
+- Reviewed by CodeRabbit and Cursor Bugbot; every finding was fixed.
+- Docs updated: Chunking, Parsing, Eloquent models, Retrieval, Generation, Configuration, Installation → Upgrading.
+
+🤖 Generated with [Claude Code](https://claude.com/claude-code)
+
 ## v1.3.0 — access-scoped corpora, database KMS store, image OCR - 2026-09-17
 
 Access-scoped corpora: filterable model metadata, no plaintext in the vector store, SQL filters on pgvector, a multi-node KMS key store and image OCR.
@@ -110,6 +188,7 @@ public function toEmbeddable(): EmbeddableDefinition
 
 
 
+
 ```
 > PDF support uses the optional `smalot/pdfparser` package (`composer require smalot/pdfparser`). Other formats need nothing extra.
 
@@ -150,6 +229,7 @@ PHP 8.2+ · Laravel 11, 12 or 13.
 
 ```bash
 composer require sellinnate/rag-engine
+
 
 
 
