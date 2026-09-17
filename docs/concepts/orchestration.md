@@ -108,7 +108,7 @@ Operational commands ship with the package:
 |---|---|
 | `rag:status` | Document counts by pipeline state (how much is pending/failed). |
 | `rag:stats {tenant}` | Token/cost usage and quota consumption for a tenant. |
-| `rag:reconcile {tenant}` | Report inconsistencies between chunks and stored vectors. |
+| `rag:reconcile {tenant} [--prune]` | Report inconsistencies between chunks and stored vectors. `--prune` first deletes the tenant's orphan embedding records (left behind by purges before v1.3). |
 | `rag:reindex {tenant}` | Rebuild a tenant's vectors from its stored documents, in their current namespaces. Eloquent documents are re-synced from the live model. Run it after upgrades that change what vectors hold (see [Security](/concepts/security#vector-payload-content)). Exits non-zero if any document failed. |
 | `rag:rotate-keys {tenant}` | Rotate a tenant's key-encryption key and re-wrap its data keys. |
 | `rag:purge {tenant}` | Crypto-shred a tenant (irreversible erasure). |

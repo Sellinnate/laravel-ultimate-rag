@@ -13,6 +13,7 @@ use Sellinnate\RagEngine\Events\DocumentIngested;
 use Sellinnate\RagEngine\Exceptions\RagException;
 use Sellinnate\RagEngine\Managers\VectorStoreManager;
 use Sellinnate\RagEngine\Models\Document;
+use Sellinnate\RagEngine\Models\EmbeddingRecord;
 use Sellinnate\RagEngine\Models\ShreddedTenant;
 use Sellinnate\RagEngine\Security\EnvelopeEncrypter;
 use Sellinnate\RagEngine\Tenancy\TenantContext;
@@ -25,6 +26,9 @@ use Sellinnate\RagEngine\Tenancy\TenantQuota;
  */
 final class Ingestor
 {
+    /** Insert attempts for a keyed source racing identical content (see ingest()). */
+    private const MAX_CREATE_ATTEMPTS = 3;
+
     public function __construct(
         private readonly TenantContext $tenant,
         private readonly EnvelopeEncrypter $encrypter,
@@ -69,50 +73,66 @@ final class Ingestor
             return $this->refreshDuplicate($duplicate, $source, $metadata, $documentKey !== null);
         }
 
-        try {
-            return DB::transaction(function () use ($source, $metadata, $tenantId, $hash): Document {
-                // Quota enforced inside the write transaction to narrow the TOCTOU
-                // window against concurrent ingests (FR-MT-04).
-                $this->quota->assertCanIngest($tenantId, $source->size());
+        // A keyed source can race a concurrent ingest of the same bytes under a
+        // DIFFERENT key: both pick the same (tenant, hash, version) and one hits
+        // the unique index without a winner of its own — retry with a fresh
+        // version instead of failing.
+        for ($attempt = 1; ; $attempt++) {
+            try {
+                return $this->create($source, $metadata, $tenantId, $hash);
+            } catch (UniqueConstraintViolationException $e) {
+                // Lost a race with a concurrent ingest of identical content (TOCTOU
+                // between the dedup check and the insert). Return the winner.
+                $winner = Document::query()
+                    ->where('tenant_id', $tenantId)
+                    ->where('content_hash', $hash)
+                    ->whereNull('soft_deleted_at')
+                    ->when($documentKey !== null, fn ($query) => $query->where('metadata->document_key', $documentKey))
+                    ->orderByDesc('version')
+                    ->first();
 
-                $version = $this->resolveVersion($source, $tenantId, $hash);
+                if ($winner instanceof Document) {
+                    return $this->refreshDuplicate($winner, $source, $metadata, $documentKey !== null);
+                }
 
-                [$ref, $dekId] = $this->encryptContent($source->content, $tenantId);
-
-                $document = Document::create([
-                    'tenant_id' => $tenantId,
-                    'source_type' => $source->sourceType,
-                    'content_hash' => $hash,
-                    'mime' => $source->mimeType,
-                    'size' => $source->size(),
-                    'metadata' => $this->buildMetadata($source, $metadata),
-                    'version' => $version,
-                    'status' => 'pending',
-                    'encrypted_content_ref' => $ref,
-                    'dek_id' => $dekId,
-                ]);
-
-                event(new DocumentIngested((string) $document->id, $tenantId));
-
-                return $document;
-            });
-        } catch (UniqueConstraintViolationException $e) {
-            // Lost a race with a concurrent ingest of identical content (TOCTOU
-            // between the dedup check and the insert). Return the winner.
-            $winner = Document::query()
-                ->where('tenant_id', $tenantId)
-                ->where('content_hash', $hash)
-                ->whereNull('soft_deleted_at')
-                ->when($documentKey !== null, fn ($query) => $query->where('metadata->document_key', $documentKey))
-                ->orderByDesc('version')
-                ->first();
-
-            if ($winner instanceof Document) {
-                return $winner;
+                if ($documentKey === null || $attempt >= self::MAX_CREATE_ATTEMPTS) {
+                    throw $e;
+                }
             }
-
-            throw $e;
         }
+    }
+
+    /**
+     * @param  array<string, mixed>  $metadata
+     */
+    private function create(IngestionSource $source, array $metadata, string $tenantId, string $hash): Document
+    {
+        return DB::transaction(function () use ($source, $metadata, $tenantId, $hash): Document {
+            // Quota enforced inside the write transaction to narrow the TOCTOU
+            // window against concurrent ingests (FR-MT-04).
+            $this->quota->assertCanIngest($tenantId, $source->size());
+
+            $version = $this->resolveVersion($source, $tenantId, $hash);
+
+            [$ref, $dekId] = $this->encryptContent($source->content, $tenantId);
+
+            $document = Document::create([
+                'tenant_id' => $tenantId,
+                'source_type' => $source->sourceType,
+                'content_hash' => $hash,
+                'mime' => $source->mimeType,
+                'size' => $source->size(),
+                'metadata' => $this->buildMetadata($source, $metadata),
+                'version' => $version,
+                'status' => 'pending',
+                'encrypted_content_ref' => $ref,
+                'dek_id' => $dekId,
+            ]);
+
+            event(new DocumentIngested((string) $document->id, $tenantId));
+
+            return $document;
+        });
     }
 
     /**
@@ -174,7 +194,14 @@ final class Ingestor
             $store->deleteByFilter($namespace, ['document_id' => $documentId]);
         }
 
-        DB::transaction(function () use ($document): void {
+        DB::transaction(function () use ($document, $tenantId): void {
+            // Embedding bookkeeping has no FK to its chunk: remove it explicitly
+            // so a purge never leaves orphan records behind (rag:reconcile).
+            $chunkIds = $document->chunks()->pluck('id')->all();
+            foreach (array_chunk($chunkIds, 500) as $batch) {
+                EmbeddingRecord::query()->where('tenant_id', $tenantId)->whereIn('chunk_id', $batch)->delete();
+            }
+
             $document->chunks()->delete();
             $document->delete();
         });

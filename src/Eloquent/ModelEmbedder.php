@@ -109,16 +109,28 @@ final class ModelEmbedder
      */
     public function forget(Model $model): void
     {
-        $this->forgetByKey($this->identity($model)['key']);
+        $identity = $this->identity($model);
+
+        $this->forgetByIdentity($identity['type'], $identity['id']);
     }
 
     /**
      * Remove a model from the index by its morph identity (for queued deletes,
-     * where the row may already be gone).
+     * where the row may already be gone). Matches both the default `type:id`
+     * document key and the stored `embeddable_*` identity, so models with a
+     * custom {@see EmbeddableDefinition::documentKey()} are removed too.
      */
     public function forgetByIdentity(string $type, string $id): void
     {
-        $this->forgetByKey($type.':'.$id);
+        Document::query()
+            ->where('tenant_id', $this->tenant->id())
+            ->where(fn ($query) => $query
+                ->where('metadata->document_key', $type.':'.$id)
+                ->orWhere(fn ($identity) => $identity
+                    ->where('metadata->embeddable_type', $type)
+                    ->where('metadata->embeddable_id', $id)))
+            ->get()
+            ->each(fn (Document $document) => $this->ingestor->purge($document));
     }
 
     /**

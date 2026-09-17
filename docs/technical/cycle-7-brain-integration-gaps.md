@@ -91,6 +91,31 @@ Fix: `audit.db_triggers` (`RAG_AUDIT_DB_TRIGGERS`, default true) gates trigger
 creation in the migration; the `AuditEntry` model guard is unchanged. The
 migration's `down()` now also drops `rag_vectors` / `rag_vector_namespaces`.
 
+## H — Orphan embedding records after purge
+
+`Ingestor::purge()` deleted a document's chunks but not their
+`rag_embeddings` rows, and there is no foreign key between the two tables.
+Every superseded Eloquent generation or forgotten model therefore left orphans
+that `rag:reconcile` reported. Fix: `purge()` deletes the embedding records of
+the purged chunks (tenant-scoped, in batches of 500) in the same transaction.
+The Indexer's re-index swap is now tenant-scoped and batched too. The
+crypto-shred path already deleted by tenant. `rag:reconcile --prune`
+(`Reconciler::pruneOrphans()`) cleans up orphans left by earlier versions.
+
+## Review follow-ups
+
+- **Keyed insert races (Bugbot).** Two documents with the same bytes under
+  different keys share the `(tenant_id, content_hash, version)` unique index. A
+  keyed insert that loses that race without a winner under its own key is now
+  retried (up to 3 attempts) with a freshly computed version.
+- **System keys in chunk metadata (Bugbot).** `Indexer::payloadMetadata()`
+  now also strips `SYSTEM_KEYS`, so a parser-provided `content` can't put
+  plaintext into the payload.
+- **Custom document keys on forget (Bugbot).** `ModelEmbedder::forget()` and
+  `forgetByIdentity()` (used by the queued job and `rag:reindex`) now also match
+  the stored `embeddable_type`/`embeddable_id`, so models with a custom
+  `documentKey()` are removed as well.
+
 ## G — Images never reached OCR
 
 No parser claimed `image/*`, so images failed as unsupported even with OCR

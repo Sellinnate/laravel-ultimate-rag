@@ -156,7 +156,8 @@ $ingestor->purge($document);       // permanent, irreversible erasure
   document's wrapped encryption key (DEK) lives only in its row, deleting the row
   makes the encrypted content permanently unrecoverable — **even from database
   backups** — while the tenant's master key is still alive. The document's
-  plaintext vectors are also deleted from the live vector store.
+  vectors, chunks and embedding bookkeeping rows are deleted too, so
+  `rag:reconcile` stays consistent.
 
 ::: callout warning "Purge is irreversible"
 `purge()` is your "right to erasure" tool: it cannot be undone, and recovery from

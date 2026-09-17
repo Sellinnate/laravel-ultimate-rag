@@ -83,12 +83,26 @@ php artisan vendor:publish --tag="rag-engine-migrations"
 php artisan migrate
 ```
 
-v1.3 adds `create_rag_kms_keys_table`. Also compare your published
-`config/rag-engine.php` with the package's copy, to pick up new keys (such as
-`security.vector_payload_content`, `audit.db_triggers`, `kms.local.connection`
-and `tables.kms_keys`). The defaults apply even without them. Then run
-`php artisan rag:reindex {tenant}` for each tenant, which strips legacy
-plaintext from the vectors and adds filterable metadata to them.
+**Upgrading from v1.2 to v1.3**
+
+1. `composer update sellinnate/rag-engine`.
+2. `php artisan vendor:publish --tag="rag-engine-migrations"`. Your already
+   published `create_rag_engine_tables` migration is skipped; only the new
+   `create_rag_kms_keys_table` migration is copied. v1.3 adds **no columns or
+   indexes** to existing tables.
+3. `php artisan migrate`. This creates `rag_kms_keys` on `RAG_KMS_CONNECTION`
+   (or the default connection).
+4. Optional: copy the new keys from the package's `config/rag-engine.php`
+   (`security.vector_payload_content`, `audit`, `kms.local.connection`,
+   `tables.kms_keys`) into your published copy. The defaults apply without them.
+5. For each tenant, run `php artisan rag:reindex {tenant}`. This strips legacy
+   plaintext from the vectors and adds your filterable metadata to them.
+6. For each tenant, run `php artisan rag:reconcile {tenant} --prune`. This
+   deletes orphan embedding records left behind by earlier purges.
+
+`RAG_AUDIT_DB_TRIGGERS` only matters when the main migration runs. If your v1.2
+migration has already run, nothing changes. If it hasn't and your host rejects
+triggers, re-publish it with `--force` (or edit your copy) before migrating.
 
 ## Step 3 — Verify the install
 

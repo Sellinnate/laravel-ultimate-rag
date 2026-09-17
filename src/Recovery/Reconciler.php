@@ -46,6 +46,26 @@ final class Reconciler
         ];
     }
 
+    /**
+     * Delete a tenant's orphan embedding records (their chunk row is gone).
+     *
+     * @return int Number of records removed.
+     */
+    public function pruneOrphans(string $tenantId): int
+    {
+        $orphans = $this->reconcile($tenantId)['orphan_embeddings'];
+        $removed = 0;
+
+        foreach (array_chunk($orphans, 500) as $batch) {
+            $removed += EmbeddingRecord::query()
+                ->where('tenant_id', $tenantId)
+                ->whereIn('chunk_id', $batch)
+                ->delete();
+        }
+
+        return $removed;
+    }
+
     public function isConsistent(string $tenantId): bool
     {
         $report = $this->reconcile($tenantId);

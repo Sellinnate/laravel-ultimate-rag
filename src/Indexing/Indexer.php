@@ -113,8 +113,8 @@ final class Indexer
         DB::transaction(function () use ($chunks, $children, $rowIds, $response, $document, $tenantId, $namespace, $options, $oldChunkIds): void {
             // Remove the previous generation's chunk rows AND their embedding
             // records (otherwise EmbeddingRecords orphan and grow unbounded).
-            if ($oldChunkIds !== []) {
-                EmbeddingRecord::whereIn('chunk_id', $oldChunkIds)->delete();
+            foreach (array_chunk($oldChunkIds, 500) as $batch) {
+                EmbeddingRecord::query()->where('tenant_id', $tenantId)->whereIn('chunk_id', $batch)->delete();
             }
             Chunk::where('document_id', $document->id)->delete();
 
@@ -316,7 +316,9 @@ final class Indexer
      */
     private function payloadMetadata(TextChunk $chunk): array
     {
-        $excluded = ['is_parent', 'parent_index', 'parent_content', 'pii_tokens', 'pii_redactions'];
+        // System keys are excluded too: e.g. a parser-provided `content` key
+        // must never smuggle plaintext into the payload when it is disabled.
+        $excluded = [...self::SYSTEM_KEYS, 'parent_index', 'parent_content', 'pii_tokens', 'pii_redactions'];
 
         return array_diff_key($chunk->metadata, array_flip($excluded));
     }
