@@ -98,3 +98,25 @@ it('MarkdownChunker sub-splits oversized sections keeping the heading', function
         expect($chunk->metadata['heading'])->toBe('Big');
     }
 });
+
+it('MarkdownChunker offsets anchor each chunk in the source, in UTF-8', function () {
+    $md = "Intro è breve.\n\n# Perché\n\nCorpo della sezione.\n\n## Così\n\n".str_repeat('Frase lunga qui. ', 8);
+    $previous = mb_internal_encoding();
+    mb_internal_encoding('ISO-8859-1');
+
+    try {
+        $chunks = (new MarkdownChunker($this->tok))->chunk(doc($md), ['size' => 60, 'overlap' => 0]);
+    } finally {
+        mb_internal_encoding($previous);
+    }
+
+    expect(count($chunks))->toBeGreaterThan(3);
+    $last = -1;
+    foreach ($chunks as $chunk) {
+        $firstLine = explode("\n", $chunk->content)[0];
+        expect(mb_substr($md, $chunk->offset, mb_strlen($firstLine)))->toBe($firstLine)
+            ->and($chunk->offset)->toBeGreaterThan($last);
+        $last = $chunk->offset;
+    }
+    expect($chunks[1]->offset)->toBe(mb_strpos($md, 'Perché'));
+});

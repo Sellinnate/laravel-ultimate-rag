@@ -142,6 +142,10 @@ follows.
 - Header normalisation skips a title that is not valid UTF-8 and falls back to
   the filename; offset/length/split calls pass `'UTF-8'` explicitly; recursive
   and markdown chunks set `offset_unit = char`.
+- `MarkdownChunker` rebuilds sections (`#` markers dropped), so its chunks are
+  not verbatim slices; its offsets are now real UTF-8 anchors: the position
+  where each chunk's first line appears in the source (previously the sum of
+  rebuilt body lengths, which drifted after the first section).
 - The sentence-candidate pattern is possessive and anchored at the start of a
   terminator run, and the preceding word comes from a 64-byte look-back, so the
   scan stays linear on hostile input.

@@ -201,7 +201,9 @@ unchanged.
 Each chunk records where it came from: its `offset` in the document (with an
 `offset_unit` of `char` or `word` — only token-unit `fixed` chunks count words),
 `token_count`, `chunk_index`, `context_header` and the inherited document
-metadata. This is what lets a search result link back to
+metadata. `recursive`, `sentence` and `fixed` (chars) chunks are exact slices at
+that offset; `markdown` chunks drop the `#` markers, and their offset is where
+the chunk's first line starts in the source. This is what lets a search result link back to
 its exact origin — see **[Eloquent models](/concepts/eloquent-models#every-chunk-is-traceable)**.
 
 ## Best practices

@@ -4,7 +4,7 @@
 
 # RAG Engine for Laravel
 
-[![Tests](https://img.shields.io/badge/tests-626%20passing-brightgreen)](https://github.com/Sellinnate/laravel-ultimate-rag/actions/workflows/run-tests.yml)
+[![Tests](https://img.shields.io/badge/tests-627%20passing-brightgreen)](https://github.com/Sellinnate/laravel-ultimate-rag/actions/workflows/run-tests.yml)
 [![Coverage](https://img.shields.io/badge/coverage-%E2%89%A590%25-brightgreen)]()
 [![PHPStan](https://img.shields.io/badge/PHPStan-level%208-blue)]()
 [![PHP](https://img.shields.io/badge/PHP-8.2%2B-777bb4)]()
@@ -368,7 +368,7 @@ npm run docs:build   # static site into ./site
 ## Testing & development
 
 ```bash
-composer test         # run the Pest suite (626 tests)
+composer test         # run the Pest suite (627 tests)
 composer analyse      # PHPStan, level 8
 composer format       # Laravel Pint (code style)
 
@@ -376,7 +376,7 @@ composer format       # Laravel Pint (code style)
 XDEBUG_MODE=coverage vendor/bin/pest --coverage --min=90
 ```
 
-Quality gates kept green on every change: **626 tests**, **PHPStan level 8**,
+Quality gates kept green on every change: **627 tests**, **PHPStan level 8**,
 **Pint** clean, **≥90% coverage**.
 
 ## License
