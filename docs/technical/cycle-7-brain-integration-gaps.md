@@ -104,6 +104,13 @@ crypto-shred path already deleted by tenant. `rag:reconcile --prune`
 
 ## Review follow-ups
 
+- **Qdrant filter parity (self-review).** `QdrantStore` translated only
+  scalars, lists and ranges, so the documented `eq`/`neq`/`in`/`nin`/`null`
+  filters threw. It now maps them to `match`, `must_not` and `is_empty`
+  conditions (nested `should` when a list contains `null`). An empty `in` list
+  short-circuits to no results without calling Qdrant, and string ranges throw
+  (Qdrant ranges are numeric).
+
 - **Keyed insert races (Bugbot).** Two documents with the same bytes under
   different keys share the `(tenant_id, content_hash, version)` unique index. A
   keyed insert that loses that race without a winner under its own key is now

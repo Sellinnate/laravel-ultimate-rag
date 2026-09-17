@@ -69,12 +69,14 @@ final class DatabaseKeyStore implements AtomicKeyStore
 
     public function put(string $keyId, string $material): void
     {
-        $now = now();
+        if ($this->add($keyId, $material)) {
+            return;
+        }
 
-        $this->rows()->updateOrInsert(
-            ['key_hash' => $this->hash($keyId)],
-            ['material' => $this->seal($keyId, $material), 'created_at' => $now, 'updated_at' => $now],
-        );
+        // Rotation: replace the material, keep the original creation time.
+        $this->rows()
+            ->where('key_hash', $this->hash($keyId))
+            ->update(['material' => $this->seal($keyId, $material), 'updated_at' => now()]);
     }
 
     public function add(string $keyId, string $material): bool

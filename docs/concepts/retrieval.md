@@ -74,7 +74,14 @@ The same rules apply on every vector store:
 | `->where('year', ['gte' => 2024, 'lt' => 2026])` | range: **numbers with numbers, strings with strings**. Strings compare byte by byte, so ISO dates (`'2026-01-31'`) work. A missing key or a mismatched type never matches. |
 
 Several conditions (several `where()` calls, or one `filter([...])`) must **all**
-match. An unknown operator throws a `RagException`.
+match. An unknown operator throws a `RagException`. An empty `in` list matches
+nothing, so a user with no allowed scopes gets no results.
+
+::: callout info "Qdrant range filters are numeric"
+Qdrant only supports ranges on numbers. A string range (such as an ISO date) on
+the `qdrant` store throws; store dates as timestamps if you need to filter them
+there. All other rules above apply to every store.
+:::
 
 ::: callout tip "Access control with a scope filter"
 Store an access `scope` on every vector and always filter on the scopes the
