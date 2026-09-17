@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 use Sellinnate\RagEngine\Chunking\FixedSizeChunker;
 use Sellinnate\RagEngine\Chunking\MarkdownChunker;
+use Sellinnate\RagEngine\Chunking\OffsetMap;
 use Sellinnate\RagEngine\Chunking\RecursiveCharacterChunker;
 use Sellinnate\RagEngine\Chunking\SentenceChunker;
 use Sellinnate\RagEngine\Data\ParsedDocument;
@@ -83,6 +84,7 @@ it('MarkdownChunker splits on headings and records the heading (FR-CH-04)', func
 
     expect(count($chunks))->toBe(2)
         ->and($chunks[0]->metadata['heading'])->toBe('Intro')
+        ->and($chunks[0]->metadata['offset_unit'])->toBe('char')
         ->and($chunks[1]->metadata['heading'])->toBe('Details')
         ->and($chunks[0]->content)->toContain('Intro body')
         ->and((new MarkdownChunker($this->tok))->name())->toBe('markdown');
@@ -96,4 +98,57 @@ it('MarkdownChunker sub-splits oversized sections keeping the heading', function
     foreach ($chunks as $chunk) {
         expect($chunk->metadata['heading'])->toBe('Big');
     }
+});
+
+it('MarkdownChunker offsets anchor each chunk in the source, in UTF-8', function () {
+    $md = "Intro è breve.\n\n# Perché\n\nCorpo della sezione.\n\n## Così\n\n".str_repeat('Frase lunga qui. ', 8);
+    $previous = mb_internal_encoding();
+    mb_internal_encoding('ISO-8859-1');
+
+    try {
+        $chunks = (new MarkdownChunker($this->tok))->chunk(doc($md), ['size' => 60, 'overlap' => 0]);
+    } finally {
+        mb_internal_encoding($previous);
+    }
+
+    expect(count($chunks))->toBeGreaterThan(3);
+    $last = -1;
+    foreach ($chunks as $chunk) {
+        $firstLine = explode("\n", $chunk->content)[0];
+        expect(mb_substr($md, $chunk->offset, mb_strlen($firstLine)))->toBe($firstLine)
+            ->and($chunk->offset)->toBeGreaterThan($last);
+        $last = $chunk->offset;
+    }
+    expect($chunks[1]->offset)->toBe(mb_strpos($md, 'Perché'));
+});
+
+it('MarkdownChunker offsets point at the right copy of repeated lines', function () {
+    $lines = [];
+    for ($i = 1; $i <= 10; $i++) {
+        $lines[] = 'Riga uguale.';
+        $lines[] = "Numero {$i}.";
+    }
+    $md = "# Sezione\n\n".implode("\n", $lines)."\n\n# Altra\n\nRiga uguale.";
+    $chunks = (new MarkdownChunker($this->tok))->chunk(doc($md), ['size' => 50, 'overlap' => 20]);
+
+    expect(count($chunks))->toBeGreaterThan(4);
+    $last = -1;
+    foreach ($chunks as $chunk) {
+        expect($chunk->offset)->toBeGreaterThan($last);
+        $last = $chunk->offset;
+
+        if (! str_starts_with($chunk->content, 'Sezione') && ! str_starts_with($chunk->content, 'Altra')) {
+            // Not a rebuilt heading chunk: the whole chunk is the slice at its offset.
+            expect(mb_substr($md, $chunk->offset, mb_strlen($chunk->content)))->toBe($chunk->content);
+        }
+    }
+});
+
+it('converts character offsets back to byte offsets', function () {
+    $map = new OffsetMap('aè€😀b');
+
+    expect($map->byteOffset(1))->toBe(1)
+        ->and($map->byteOffset(4))->toBe(10)
+        ->and($map->byteOffset(2))->toBe(3)
+        ->and($map->byteOffset(99))->toBe(11);
 });

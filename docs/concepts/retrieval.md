@@ -26,9 +26,9 @@ $hits = Rag::search('how do refunds work?')->topK(5)->get();
 
 foreach ($hits as $hit) {
     $hit->score;       // relevance (higher = more relevant)
-    $hit->content;     // the chunk text
+    $hit->content;     // the chunk text, exactly as in the source (no header)
     $hit->documentId;  // which Document it came from
-    $hit->metadata;    // tags, heading, source_ref, parent_content, ...
+    $hit->metadata;    // tags, heading, context_header, title, source_ref, parent_content, ...
 }
 ```
 
@@ -131,7 +131,10 @@ right ranking) — not by default.
 - **Hybrid search** runs your query through *both* semantic (vector) and keyword
   (BM25) search, then fuses the two ranked lists with **RRF (Reciprocal Rank
   Fusion)**. It rescues queries where exact tokens matter — error codes, names,
-  acronyms — that pure semantic search can miss.
+  acronyms — that pure semantic search can miss. The keyword side scores each
+  chunk together with its [contextual header](/concepts/chunking#contextual-headers),
+  so "Livio Cheese quote" also matches the quote's price chunk, which never
+  names the client.
 - **MMR (Maximal Marginal Relevance)** re-orders results to balance relevance
   with *variety*. The number (0–1) is how much to favour relevance over
   diversity; `0.6` leans relevant. Use it when your top 5 are five rewordings of

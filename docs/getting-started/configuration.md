@@ -184,15 +184,35 @@ See **[Embedding Eloquent models](/concepts/eloquent-models)**.
 ```php
 'chunking' => [
     'default_strategy'   => env('RAG_CHUNK_STRATEGY', 'recursive'),
-    'chunk_size'         => 1000,   // characters
-    'chunk_overlap'      => 200,
+    'chunk_size'         => env('RAG_CHUNK_SIZE', 1000),     // characters
+    'chunk_overlap'      => env('RAG_CHUNK_OVERLAP', 200),   // characters, whole sentences
     'max_tokens'         => 512,
-    'contextual_headers' => true,   // prepend doc/section title to each chunk
+    'abbreviations'      => [],     // extra abbreviations that never end a sentence
+    'contextual_headers' => env('RAG_CONTEXTUAL_HEADERS', true), // "Document: <title>" on each chunk
     'parent_child'       => false,  // small-to-big chunking
 ],
 ```
 
-See **[Chunking](/concepts/chunking)** for what each option does and how to pick.
+See **[Chunking](/concepts/chunking)** for what each option does and how to pick
+(and **[Sentence boundaries](/concepts/chunking#sentence-boundaries)** for the
+abbreviation rules).
+
+### Parsing clean-up
+
+```php
+'parsing' => [
+    'pdf' => [
+        'strip_repeated_lines'     => env('RAG_PDF_STRIP_REPEATED_LINES', true),     // running headers/footers
+        'repeated_line_threshold'  => env('RAG_PDF_REPEATED_LINE_THRESHOLD', 0.6),   // share of pages (0 < x <= 1)
+        'repeated_line_min_pages'  => env('RAG_PDF_REPEATED_LINE_MIN_PAGES', 2),     // only PDFs this long
+        'repeated_line_edge_lines' => env('RAG_PDF_REPEATED_LINE_EDGE_LINES', 3),    // lines at top/bottom checked
+        'strip_symbol_lines'       => env('RAG_PDF_STRIP_SYMBOL_LINES', true),       // "→ → →" lines
+        'join_wrapped_lines'       => env('RAG_PDF_JOIN_WRAPPED_LINES', true),       // re-join visual line wraps
+    ],
+],
+```
+
+See **[PDF clean-up](/concepts/parsing#pdf-cleanup)**.
 
 ## Production checklist (best practices)
 

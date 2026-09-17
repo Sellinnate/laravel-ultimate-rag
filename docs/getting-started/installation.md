@@ -83,6 +83,23 @@ php artisan vendor:publish --tag="rag-engine-migrations"
 php artisan migrate
 ```
 
+**Upgrading from v1.3 to v1.4**
+
+v1.4 changes how text is cleaned and chunked. No migration is needed.
+
+1. `composer update sellinnate/rag-engine`.
+2. Optional: copy the new keys from the package's `config/rag-engine.php` into
+   your published copy (`parsing.pdf.*`, `chunking.abbreviations`, and the new
+   `env()` calls on `chunking.chunk_size`, `chunk_overlap` and
+   `contextual_headers`). The defaults apply without them.
+3. Optional: give your Eloquent models a title with
+   `EmbeddableDefinition::title()` (see [Document title](/concepts/eloquent-models#document-title)).
+4. For each tenant, run `php artisan rag:reindex {tenant}`. Existing chunks were
+   cut by the old rules and have no contextual header until they are
+   re-processed. Search keeps working meanwhile.
+5. If you use the `sentence` strategy and passed `overlap` as a number of
+   sentences, pass characters now (e.g. `200`).
+
 **Upgrading from v1.2 to v1.3**
 
 1. `composer update sellinnate/rag-engine`.

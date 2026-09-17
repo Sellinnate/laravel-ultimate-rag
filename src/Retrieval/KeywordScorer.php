@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Sellinnate\RagEngine\Retrieval;
 
+use Sellinnate\RagEngine\Chunking\ContextualHeaderEnricher;
 use Sellinnate\RagEngine\Data\SearchHit;
 
 /**
@@ -35,7 +36,7 @@ final class KeywordScorer
         $totalLength = 0;
 
         foreach ($candidates as $i => $hit) {
-            $terms = $this->tokenize($hit->content);
+            $terms = $this->tokenize($this->scoredText($hit));
             $docTerms[$i] = array_count_values($terms);
             $docLengths[$i] = count($terms);
             $totalLength += count($terms);
@@ -77,6 +78,17 @@ final class KeywordScorer
         usort($scored, static fn (SearchHit $a, SearchHit $b): int => $b->score <=> $a->score);
 
         return array_slice($scored, 0, max(0, $topK));
+    }
+
+    /**
+     * The chunk text plus its contextual header (document title / section), so
+     * a query naming the document also matches chunks that never repeat it.
+     */
+    private function scoredText(SearchHit $hit): string
+    {
+        $header = $hit->metadata[ContextualHeaderEnricher::METADATA_KEY] ?? null;
+
+        return is_string($header) && $header !== '' ? $header."\n".$hit->content : $hit->content;
     }
 
     /**

@@ -93,3 +93,37 @@ it('JsonParser flattens nested structure to path:value lines', function () {
 it('JsonParser rejects invalid json', function () {
     (new JsonParser)->parse('{not valid', 'application/json');
 })->throws(ParsingException::class, 'Invalid JSON');
+
+it('HtmlParser keeps block structure as paragraphs and lines', function () {
+    $html = <<<'HTML'
+<html><body>
+  <!-- commento --><h1>Preventivo</h1><p>Il cliente è
+     Livio Cheese.</p><p>Secondo<br>paragrafo</p>
+  <ul><li>Ordini</li><li>Fatture</li></ul>
+  <table><tr><th>Voce</th><th>Importo</th></tr><tr><td>Licenza</td><td>€ 3.900,00</td></tr></table>
+  <pre>riga 1
+riga 2</pre>
+  <div><span>Inline</span> <b>testo</b></div>
+</body></html>
+HTML;
+
+    expect((new HtmlParser)->parse($html, 'text/html')->text)->toBe(implode("\n", [
+        'Preventivo',
+        '',
+        'Il cliente è Livio Cheese.',
+        '',
+        'Secondo',
+        'paragrafo',
+        '',
+        'Ordini',
+        'Fatture',
+        '',
+        "Voce\tImporto",
+        "Licenza\t€ 3.900,00",
+        '',
+        'riga 1',
+        'riga 2',
+        '',
+        'Inline testo',
+    ]));
+});

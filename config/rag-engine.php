@@ -234,6 +234,35 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Parsing clean-up (FR-PA)
+    |--------------------------------------------------------------------------
+    |
+    | PDF text extraction returns every visual line plus the running headers
+    | and footers of each page. These steps clean it before chunking. Changing
+    | them changes the indexed text: run `php artisan rag:reindex {tenant}`.
+    |
+    */
+    'parsing' => [
+        'pdf' => [
+            // Drop running headers/footers: a line within the first/last
+            // `repeated_line_edge_lines` lines of a page that repeats (digits
+            // and spacing ignored, so "Page 2" == "Page 3") on at least
+            // `repeated_line_threshold` of the pages, and on 2 or more.
+            'strip_repeated_lines' => env('RAG_PDF_STRIP_REPEATED_LINES', true),
+            'repeated_line_threshold' => env('RAG_PDF_REPEATED_LINE_THRESHOLD', 0.6), // 0 < x <= 1
+            'repeated_line_min_pages' => env('RAG_PDF_REPEATED_LINE_MIN_PAGES', 2), // only for PDFs this long (min 2)
+            'repeated_line_edge_lines' => env('RAG_PDF_REPEATED_LINE_EDGE_LINES', 3), // >= 1
+            // Drop lines made only of arrows/bullets/box-drawing symbols.
+            'strip_symbol_lines' => env('RAG_PDF_STRIP_SYMBOL_LINES', true),
+            // Re-join visual line wraps (a line not ending a sentence followed
+            // by a lowercase line). Headings, rows and list items stay on
+            // their own lines; pages are separated by a blank line.
+            'join_wrapped_lines' => env('RAG_PDF_JOIN_WRAPPED_LINES', true),
+        ],
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | KMS / BYOK (FR-SEC)
     |--------------------------------------------------------------------------
     */
@@ -445,11 +474,23 @@ return [
 
     'chunking' => [
         'default_strategy' => env('RAG_CHUNK_STRATEGY', 'recursive'),
-        'chunk_size' => 1000,
-        'chunk_overlap' => 200,
+        // Target chunk size and overlap, in characters, for every strategy.
+        // `recursive` (default) keeps paragraphs whole and cuts between
+        // sentences; `sentence` packs whole sentences. Both repeat whole
+        // trailing sentences as overlap and only cut inside a sentence
+        // longer than chunk_size.
+        'chunk_size' => env('RAG_CHUNK_SIZE', 1000),
+        'chunk_overlap' => env('RAG_CHUNK_OVERLAP', 200),
         'max_tokens' => 512,
-        // Prepend document/section context to each chunk before embedding (FR-CH-08).
-        'contextual_headers' => true,
+        // Extra abbreviations that never end a sentence (the built-in IT/EN/DE
+        // list already covers Sig., Dott., ecc., e.g., Mr., S.r.l., …).
+        // Case-insensitive, with or without the dot, e.g. ['Rif', 'Cod.Fisc'].
+        'abbreviations' => [],
+        // Prepend "Document: <title> > Section: <heading>" to each chunk's
+        // embedded text (FR-CH-08). The title is the document's `title`
+        // metadata (EmbeddableDefinition::title() for models), else its
+        // filename. Search results return the chunk without it.
+        'contextual_headers' => env('RAG_CONTEXTUAL_HEADERS', true),
         // Small-to-big parent-child chunking (FR-CH-07).
         'parent_child' => false,
     ],

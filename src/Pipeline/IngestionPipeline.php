@@ -41,9 +41,23 @@ final class IngestionPipeline
             $this->transition($document, 'parsing');
 
             $content = $this->ingestor->content($document);
-            $parsed = $this->parsers->parse($content, (string) ($document->mime ?? 'text/plain'), [
-                'filename' => $document->metadata['filename'] ?? null,
-            ]);
+            $context = self::documentContext($document);
+            $parsed = $this->parsers->parse($content, (string) ($document->mime ?? 'text/plain'), $context);
+
+            // The document's declared title/filename describe the whole
+            // document whatever its source (an Eloquent model is parsed as
+            // plain text with no filename): make them available to the
+            // contextual headers. A declared title beats one read from the file.
+            $declared = [];
+            if ($context['title'] !== null) {
+                $declared['title'] = $context['title'];
+            }
+            if ($context['filename'] !== null && ! isset($parsed->metadata['filename'])) {
+                $declared['filename'] = $context['filename'];
+            }
+            if ($declared !== []) {
+                $parsed = $parsed->withMetadata($declared);
+            }
 
             // Preprocess: clean + detect language + redact PII before indexing.
             $parsed = $this->preprocessing->process($parsed);
@@ -66,6 +80,25 @@ final class IngestionPipeline
 
             throw $e;
         }
+    }
+
+    /**
+     * Document-level context handed to the parser: the declared `title` and
+     * `filename` metadata (null when absent or blank).
+     *
+     * @return array{filename: ?string, title: ?string}
+     */
+    private static function documentContext(Document $document): array
+    {
+        $metadata = $document->metadata ?? [];
+        $context = [];
+
+        foreach (['filename', 'title'] as $key) {
+            $value = $metadata[$key] ?? null;
+            $context[$key] = is_string($value) && trim($value) !== '' ? trim($value) : null;
+        }
+
+        return ['filename' => $context['filename'], 'title' => $context['title']];
     }
 
     private function transition(Document $document, string $state): void

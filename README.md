@@ -4,7 +4,7 @@
 
 # RAG Engine for Laravel
 
-[![Tests](https://img.shields.io/badge/tests-521%20passing-brightgreen)](https://github.com/Sellinnate/laravel-ultimate-rag/actions/workflows/run-tests.yml)
+[![Tests](https://img.shields.io/badge/tests-629%20passing-brightgreen)](https://github.com/Sellinnate/laravel-ultimate-rag/actions/workflows/run-tests.yml)
 [![Coverage](https://img.shields.io/badge/coverage-%E2%89%A590%25-brightgreen)]()
 [![PHPStan](https://img.shields.io/badge/PHPStan-level%208-blue)]()
 [![PHP](https://img.shields.io/badge/PHP-8.2%2B-777bb4)]()
@@ -55,6 +55,11 @@ code, one config switch.
 - **Multi-format ingestion** — raw text, file uploads, URLs (SSRF-guarded), cloud
   storage and Eloquent records. Safely parses Markdown, HTML, XML, CSV, JSON,
   DOCX and PDF, and images (PNG/JPEG/WebP/TIFF) through OCR.
+- **Clean, structured chunks** — PDF running headers/footers and stray symbols
+  are stripped and wrapped lines re-joined; chunks keep paragraphs and line
+  breaks and end on sentence boundaries (Italian/English aware: `S.r.l.`,
+  `Dott.`, `e.g.`, `€ 8.400,00`, dates and URLs never split a sentence); every
+  chunk is embedded with a `Document: <title>` header.
 - **Pluggable everything** — parsing, chunking, embedding, vector store,
   reranking and LLM are swappable drivers behind stable contracts.
 - **10 embedding providers** — OpenAI, Azure OpenAI, Mistral, Jina, Voyage,
@@ -172,6 +177,7 @@ class Article extends Model implements Embeddable
     public function toEmbeddable(): EmbeddableDefinition
     {
         return EmbeddableDefinition::make()
+            ->title($this->title)                        // heads every chunk's embedding
             ->add('Title', $this->title)
             ->add('Body', $this->body)
             ->include($this->author, 'author')          // compose a related model
@@ -289,7 +295,16 @@ Anthropic is generation-only (no embeddings). Answers can be **streamed** with
 (+ OCR for scans) · images PNG/JPEG/WebP/TIFF (via OCR).
 
 **Chunkers**: `recursive` (default) · `sentence` · `markdown` · `fixed`
-(char- or token-based), with optional parent-child and contextual headers.
+(char- or token-based), with optional parent-child and contextual headers
+(`Document: <title> > Section: <heading>`, embedded and keyword-scored but not
+returned in hit content). `recursive` and `sentence` end chunks on sentence
+boundaries and overlap in whole sentences (`RAG_CHUNK_SIZE`,
+`RAG_CHUNK_OVERLAP`, extra `chunking.abbreviations`).
+
+**PDF clean-up** (`parsing.pdf`): repeated header/footer removal
+(`RAG_PDF_STRIP_REPEATED_LINES`, threshold/min pages/edge lines), symbol-only
+line removal (`RAG_PDF_STRIP_SYMBOL_LINES`) and wrapped-line joining
+(`RAG_PDF_JOIN_WRAPPED_LINES`), all on by default.
 
 All drivers share one contract — switching backends needs no code changes, and
 you can register your own (see
@@ -353,7 +368,7 @@ npm run docs:build   # static site into ./site
 ## Testing & development
 
 ```bash
-composer test         # run the Pest suite (521 tests)
+composer test         # run the Pest suite (629 tests)
 composer analyse      # PHPStan, level 8
 composer format       # Laravel Pint (code style)
 
@@ -361,7 +376,7 @@ composer format       # Laravel Pint (code style)
 XDEBUG_MODE=coverage vendor/bin/pest --coverage --min=90
 ```
 
-Quality gates kept green on every change: **521 tests**, **PHPStan level 8**,
+Quality gates kept green on every change: **629 tests**, **PHPStan level 8**,
 **Pint** clean, **≥90% coverage**.
 
 ## License

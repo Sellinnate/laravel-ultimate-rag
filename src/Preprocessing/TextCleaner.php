@@ -9,8 +9,9 @@ use Sellinnate\RagEngine\Data\ParsedDocument;
 
 /**
  * Text cleaning stage (FR-PP-01): normalizes encoding to valid UTF-8, collapses
- * runs of whitespace, strips control characters and common extraction artefacts,
- * and trims. Non-destructive of meaningful content.
+ * runs of spaces, strips control characters and common extraction artefacts,
+ * and trims. Non-destructive of meaningful content: line breaks and paragraph
+ * breaks (one blank line) are preserved so chunkers can split on them.
  */
 final class TextCleaner implements PreprocessingStage
 {
@@ -33,14 +34,15 @@ final class TextCleaner implements PreprocessingStage
         // Remove soft hyphens and zero-width characters (common PDF artefacts).
         $text = preg_replace('/[\x{00AD}\x{200B}-\x{200D}\x{FEFF}]/u', '', $text) ?? $text;
 
-        // Collapse 3+ blank lines to a paragraph break.
-        $text = preg_replace('/\n{3,}/', "\n\n", $text) ?? $text;
-
         // Collapse runs of spaces/tabs.
         $text = preg_replace('/[ \t]{2,}/', ' ', $text) ?? $text;
 
         // Trim trailing spaces on each line.
         $text = preg_replace('/[ \t]+\n/', "\n", $text) ?? $text;
+
+        // Collapse 2+ blank lines to a single paragraph break. Line and
+        // paragraph breaks are otherwise kept: chunkers split on them.
+        $text = preg_replace('/\n{3,}/', "\n\n", $text) ?? $text;
 
         return trim($text);
     }

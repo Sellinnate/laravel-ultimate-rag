@@ -80,12 +80,29 @@ Two refinements:
   without one never matches a keyed document.** Two records with identical
   text (e.g. two Eloquent models, or a model and a plain text upload) stay
   separate documents, each with its own metadata.
-- **Changed vector metadata is applied, not ignored.** If identical content is
-  ingested again with a different `rag_vector_metadata` (see below), the
-  existing document takes the new values and goes back to `pending`, so the next
-  `Rag::process()` rebuilds its vectors. Without a `document_key`, the last
+- **Changed vector metadata or title is applied, not ignored.** If identical
+  content is ingested again with a different `rag_vector_metadata` (see below)
+  or `title`, the existing document takes the new values and goes back to
+  `pending`, so the next `Rag::process()` rebuilds its vectors and headers. Without a `document_key`, the last
   writer wins. Give each separately-scoped copy its own `document_key` if you
   need both.
+
+## Give documents a title {#title}
+
+Pass a human-readable `title` in the metadata. It heads every chunk's
+[contextual header](/concepts/chunking#contextual-headers) (`Document: <title>`),
+so a chunk that never names its document is still found by a query about it:
+
+```php
+$document = Rag::ingest(
+    Rag::source()->file(storage_path('quotes/q-2026-17.pdf')),
+    ['title' => 'Quote — Livio Cheese'],
+);
+Rag::process($document);
+```
+
+Without a title, the title stored inside the file (PDF/HTML) is used, then the
+filename. A title you pass always wins over the one inside the file.
 
 ## Versioning
 

@@ -4,12 +4,15 @@ declare(strict_types=1);
 
 namespace Sellinnate\RagEngine\Generation;
 
+use Sellinnate\RagEngine\Chunking\ContextualHeaderEnricher;
 use Sellinnate\RagEngine\Contracts\Tokenizer;
 use Sellinnate\RagEngine\Data\SearchHit;
 
 /**
  * Assembles retrieved hits into a numbered, citation-ready context block
- * (FR-GE-01/03), respecting a token budget (FR-RR-04).
+ * (FR-GE-01/03), respecting a token budget (FR-RR-04). Each passage is
+ * preceded by its contextual header, e.g. `(Document: Quote > Section: Prices)`,
+ * when the chunk has one.
  */
 final class ContextAssembler
 {
@@ -50,7 +53,11 @@ final class ContextAssembler
     private function hitText(SearchHit $hit): string
     {
         $parent = $hit->metadata['parent_content'] ?? null;
+        $text = is_string($parent) && $parent !== '' ? $parent : $hit->content;
 
-        return is_string($parent) && $parent !== '' ? $parent : $hit->content;
+        // Tell the model which document (and section) the passage comes from.
+        $header = $hit->metadata[ContextualHeaderEnricher::METADATA_KEY] ?? null;
+
+        return is_string($header) && $header !== '' ? "({$header})\n{$text}" : $text;
     }
 }

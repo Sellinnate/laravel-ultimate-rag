@@ -222,16 +222,26 @@ final class Ingestor
     }
 
     /**
+     * Metadata keys whose change alters what gets indexed even when the
+     * content bytes are identical: the vector payload metadata, and the
+     * `title` that heads every chunk's contextual header.
+     *
+     * @var list<string>
+     */
+    public const INDEXED_METADATA_KEYS = ['rag_vector_metadata', 'title'];
+
+    /**
      * Keep an unchanged-content document in step with its incoming metadata.
      *
      * - A keyed duplicate (same logical document) takes the incoming metadata
      *   (provenance is kept).
-     * - An un-keyed duplicate only takes an explicitly supplied, different
-     *   `rag_vector_metadata` (last writer wins); other metadata is untouched.
+     * - An un-keyed duplicate only takes explicitly supplied, different
+     *   {@see INDEXED_METADATA_KEYS} values (last writer wins); other metadata
+     *   is untouched.
      *
-     * When the metadata propagated into vector payloads changed, the document is
-     * flagged `pending` so the caller re-processes it and no vector keeps stale
-     * (e.g. access-control) metadata.
+     * When an indexed key changed (e.g. an access scope or the title), the
+     * document is flagged `pending` so the caller re-processes it and no vector
+     * or contextual header stays stale.
      *
      * @param  array<string, mixed>  $metadata
      */
@@ -239,13 +249,11 @@ final class Ingestor
     {
         $current = $document->metadata ?? [];
         $incoming = [...$source->metadata, ...$metadata];
+        $supplied = array_intersect_key($incoming, array_flip(self::INDEXED_METADATA_KEYS));
 
-        if (! $keyed && ! array_key_exists('rag_vector_metadata', $incoming)) {
+        if (! $keyed && $supplied === []) {
             return $document;
         }
-
-        $vectorChanged = array_key_exists('rag_vector_metadata', $incoming)
-            && self::canonical($current['rag_vector_metadata'] ?? []) !== self::canonical($incoming['rag_vector_metadata']);
 
         if ($keyed) {
             // The logical document's latest declaration is authoritative (keys
@@ -257,7 +265,7 @@ final class Ingestor
                 $updated['provenance'] = $current['provenance'];
             }
         } else {
-            $updated = [...$current, 'rag_vector_metadata' => $incoming['rag_vector_metadata']];
+            $updated = [...$current, ...$supplied];
         }
 
         if (self::canonical($updated) === self::canonical($current)) {
@@ -266,13 +274,28 @@ final class Ingestor
 
         $attributes = ['metadata' => $updated];
 
-        if ($vectorChanged && $document->status === 'indexed') {
+        if ($document->status === 'indexed' && self::indexedMetadataChanged($current, $updated)) {
             $attributes['status'] = 'pending';
         }
 
         $document->forceFill($attributes)->save();
 
         return $document;
+    }
+
+    /**
+     * @param  array<string, mixed>  $before
+     * @param  array<string, mixed>  $after
+     */
+    private static function indexedMetadataChanged(array $before, array $after): bool
+    {
+        foreach (self::INDEXED_METADATA_KEYS as $key) {
+            if (self::canonical($before[$key] ?? null) !== self::canonical($after[$key] ?? null)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private function explicitDocumentKey(IngestionSource $source): ?string

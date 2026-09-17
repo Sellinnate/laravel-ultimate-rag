@@ -40,6 +40,7 @@ final class EmbeddableCompiler
             includedKeys: array_values(array_unique($includedKeys)),
             options: $definition->optionsArray(),
             documentKey: $definition->documentKeyOverride() ?? $this->keyFor($root),
+            title: $definition->titleValue(),
         );
     }
 

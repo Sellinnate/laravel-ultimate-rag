@@ -16,6 +16,7 @@ final class CompiledEmbeddable
      * @param  array<string, mixed>  $metadata  Provenance metadata for the document.
      * @param  list<string>  $includedKeys  Identity keys of every nested embeddable composed in.
      * @param  array<string, mixed>  $options  Per-model chunking/indexing options.
+     * @param  string|null  $title  The root model's declared title (see EmbeddableDefinition::title()).
      */
     public function __construct(
         public readonly string $content,
@@ -23,6 +24,7 @@ final class CompiledEmbeddable
         public readonly array $includedKeys,
         public readonly array $options,
         public readonly string $documentKey,
+        public readonly ?string $title = null,
     ) {}
 
     public function isEmpty(): bool
