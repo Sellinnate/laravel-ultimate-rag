@@ -64,8 +64,10 @@ it('compiles eq / neq / in / nin operators', function () {
         ->and($this->compiler->compile(['a' => ['neq' => null]])['sql'])->toBe('NOT '.PG_NULL)
         ->and($this->compiler->compile(['a' => ['in' => ['k' => 'x']]])['bindings'])->toBe(['a', '"x"', 'a', 'a', '"x"'])
         ->and($this->compiler->compile(['a' => ['nin' => ['x']]])['sql'])->toStartWith('NOT (COALESCE((metadata -> ?::text) IN (?::jsonb), FALSE) OR EXISTS')
-        ->and($this->compiler->compile(['a' => ['in' => 'x']]))->toBe(['sql' => 'FALSE', 'bindings' => []])
-        ->and($this->compiler->compile(['a' => ['nin' => 'x']]))->toBe(['sql' => 'FALSE', 'bindings' => []])
+        ->and(fn () => $this->compiler->compile(['a' => ['in' => 'x']]))->toThrow(RagException::class, '[in] filter operator needs a list')
+        ->and(fn () => $this->compiler->compile(['a' => ['nin' => 'x']]))->toThrow(RagException::class, '[nin] filter operator needs a list')
+        ->and(fn () => MetadataMatcher::matches(['a' => 'x'], ['a' => ['in' => 'x']]))->toThrow(RagException::class, 'needs a list')
+        ->and(fn () => MetadataMatcher::matches(['a' => 'x'], ['a' => ['nin' => null]]))->toThrow(RagException::class, 'needs a list')
         ->and($this->compiler->compile(['a' => ['eq' => ['p', 'q']]]))->toBe([
             'sql' => '(COALESCE((metadata -> ?::text) = ?::jsonb, FALSE))',
             'bindings' => ['a', '["p","q"]'],

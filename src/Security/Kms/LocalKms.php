@@ -90,13 +90,24 @@ final class LocalKms implements KeyManagement
 
     public function rotateKey(string $keyId): void
     {
+        $append = function (?string $raw): string {
+            $versions = $raw === null ? [] : $this->decodeVersions($raw);
+            $versions[] = random_bytes(32);
+
+            return $this->encodeVersions($versions);
+        };
+
+        // Shared stores rotate atomically, so concurrent rotations can't drop
+        // each other's versions.
+        if ($this->store instanceof AtomicKeyStore) {
+            $this->store->mutate($keyId, $append);
+
+            return;
+        }
+
         // Read the material (not has()) so a stale "missing" can never replace
         // the existing versions with a single new one.
-        $raw = $this->store->get($keyId);
-        $versions = $raw === null ? [] : $this->decodeVersions($raw);
-        $versions[] = random_bytes(32);
-
-        $this->store->put($keyId, $this->encodeVersions($versions));
+        $this->store->put($keyId, $append($this->store->get($keyId)));
     }
 
     public function destroyKey(string $keyId): void

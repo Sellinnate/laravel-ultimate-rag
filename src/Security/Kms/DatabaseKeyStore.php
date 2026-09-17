@@ -98,6 +98,35 @@ final class DatabaseKeyStore implements AtomicKeyStore
         ]) > 0;
     }
 
+    public function mutate(string $keyId, callable $mutator): void
+    {
+        $connection = $this->db->connection($this->connection);
+
+        $connection->transaction(function () use ($connection, $keyId, $mutator): void {
+            $hash = $this->hash($keyId);
+            $table = $connection->table($this->table);
+
+            // Make sure the row exists so it can be locked (insert-if-absent).
+            $sealed = $table->clone()->where('key_hash', $hash)->lockForUpdate()->value('material');
+            $current = is_string($sealed) ? $this->open($keyId, $sealed) : null;
+            $material = $mutator($current);
+
+            if ($current === null && $this->add($keyId, $material)) {
+                return;
+            }
+
+            if ($current === null) {
+                // Lost an insert race: lock the winner's row and apply on top.
+                $sealed = $table->clone()->where('key_hash', $hash)->lockForUpdate()->value('material');
+                $material = $mutator(is_string($sealed) ? $this->open($keyId, $sealed) : null);
+            }
+
+            $table->clone()
+                ->where('key_hash', $hash)
+                ->update(['material' => $this->seal($keyId, $material), 'updated_at' => now()]);
+        }, attempts: 3); // retried on deadlock (competing gap locks on a new key)
+    }
+
     public function forget(string $keyId): void
     {
         // Hard delete — destroying the KEK is what crypto-shreds the data.

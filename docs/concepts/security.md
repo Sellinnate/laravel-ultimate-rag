@@ -104,7 +104,9 @@ How it protects the keys:
 - **Crypto-shredding is a hard `DELETE`** of the row (`destroyKey()` /
   `rag:purge`).
 - Creating a key is an **atomic insert-if-absent**, so two nodes provisioning
-  the same tenant at once can't overwrite each other's key. Keys are read with
+  the same tenant at once can't overwrite each other's key. **Rotation** is an
+  atomic read-modify-write (`SELECT … FOR UPDATE`), so concurrent rotations
+  never drop a key version. Keys are read with
   a locking read, so a node inside a long MySQL/MariaDB `REPEATABLE READ`
   transaction still sees a key another node has just committed.
 

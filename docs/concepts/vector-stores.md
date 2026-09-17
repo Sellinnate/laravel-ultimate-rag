@@ -184,8 +184,10 @@ migration to run.
 Metadata filters (`->where(...)`) are compiled to SQL on the `metadata` `jsonb`
 column and applied **before** `ORDER BY … LIMIT`, so a selective filter (e.g.
 an access `scope` that matches 1% of the vectors) still returns `topK` hits.
-Filter keys and values are always sent as bound parameters. Keys must match
-`[A-Za-z0-9_.:-]` (up to 128 characters), otherwise the query throws.
+Filter keys and values are always sent as bound parameters. A key must be 1–128
+characters long, start with a letter, digit or underscore (`[A-Za-z0-9_]`), and
+may then contain letters, digits, `_`, `.`, `:` or `-`. Anything else (e.g.
+`.scope`, `-scope`, `a b`) makes the query throw.
 
 An ANN index can still stop early when a filter is applied after it, so the
 engine also tunes the scan per query:
@@ -277,7 +279,8 @@ model), **re-index your corpus**:
   have an admin run `CREATE EXTENSION vector;` once, or use a superuser.
 - **`pgvector` dimension error** → `RAG_PGVECTOR_DIMENSIONS` doesn't match your
   embedder. Set it to the model's output size and re-index.
-- **`pgvector` "Invalid metadata filter key"** → a `where()` key contains
+- **`pgvector` "Invalid metadata filter key"** → a `where()` key is empty,
+  longer than 128 characters, starts with `.`, `:` or `-`, or contains
   characters outside `[A-Za-z0-9_.:-]`. Rename the metadata key.
 - **The `content` column is empty** → expected with encryption on: chunk text is
   kept encrypted in `rag_chunks` and decrypted at search time. See

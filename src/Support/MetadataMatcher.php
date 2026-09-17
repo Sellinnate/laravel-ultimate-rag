@@ -61,8 +61,8 @@ final class MetadataMatcher
                 'gte' => self::range($actual, $value, static fn (int $cmp): bool => $cmp >= 0),
                 'lt' => self::range($actual, $value, static fn (int $cmp): bool => $cmp < 0),
                 'lte' => self::range($actual, $value, static fn (int $cmp): bool => $cmp <= 0),
-                'in' => is_array($value) && self::in($actual, $value),
-                'nin' => is_array($value) && ! self::in($actual, $value),
+                'in' => self::in($actual, self::listOperand($op, $value)),
+                'nin' => ! self::in($actual, self::listOperand($op, $value)),
                 default => throw new RagException("Unsupported filter operator [{$op}]."),
             };
 
@@ -72,6 +72,20 @@ final class MetadataMatcher
         }
 
         return true;
+    }
+
+    /**
+     * `in` / `nin` need a list: a malformed filter fails loudly on every store.
+     *
+     * @return array<mixed>
+     */
+    public static function listOperand(string $operator, mixed $value): array
+    {
+        if (! is_array($value)) {
+            throw new RagException("The [{$operator}] filter operator needs a list of values.");
+        }
+
+        return $value;
     }
 
     private static function equals(mixed $actual, mixed $expected): bool

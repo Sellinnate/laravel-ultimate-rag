@@ -18,4 +18,13 @@ interface AtomicKeyStore extends KeyStore
      * @return bool True when this call created the key, false when it existed.
      */
     public function add(string $keyId, string $material): bool;
+
+    /**
+     * Atomically read-modify-write a key: `$mutator` receives the current
+     * material (null when absent) and returns the new material, while no other
+     * writer can change the key in between (e.g. two concurrent rotations).
+     *
+     * @param  callable(string|null): string  $mutator
+     */
+    public function mutate(string $keyId, callable $mutator): void;
 }

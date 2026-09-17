@@ -175,9 +175,18 @@ final class PgVectorStore implements VectorStore
 
         $conn = $this->conn();
         $rows = $conn->transaction(function () use ($conn, $sql, $bindings, $limit, $query): array {
-            $this->tuneIndexScan($conn, $limit, $query->filters !== []);
+            // SET LOCAL lasts until the OUTERMOST transaction ends; when this
+            // runs as a savepoint inside the caller's transaction, put the
+            // caller's settings back afterwards.
+            $previous = $this->captureIndexScanSettings($conn);
 
-            return $conn->select($sql, $bindings);
+            try {
+                $this->tuneIndexScan($conn, $limit, $query->filters !== []);
+
+                return $conn->select($sql, $bindings);
+            } finally {
+                $this->restoreIndexScanSettings($conn, $previous);
+            }
         });
 
         $hits = [];
@@ -297,6 +306,40 @@ final class PgVectorStore implements VectorStore
         $conn->statement($this->index === 'ivfflat'
             ? 'SET LOCAL ivfflat.iterative_scan = relaxed_order'
             : 'SET LOCAL hnsw.iterative_scan = strict_order');
+    }
+
+    /**
+     * The settings {@see tuneIndexScan()} may change, as currently effective.
+     *
+     * @return array<string, string|null>
+     */
+    private function captureIndexScanSettings(ConnectionInterface $conn): array
+    {
+        $names = ['hnsw.ef_search', 'enable_indexscan'];
+
+        if (version_compare($this->extensionVersion($conn), '0.8.0', '>=')) {
+            $names[] = $this->index === 'ivfflat' ? 'ivfflat.iterative_scan' : 'hnsw.iterative_scan';
+        }
+
+        $settings = [];
+        foreach ($names as $name) {
+            $row = $conn->selectOne('SELECT current_setting(?, true) AS value', [$name]);
+            $settings[$name] = is_object($row) && is_string($row->value ?? null) ? $row->value : null;
+        }
+
+        return $settings;
+    }
+
+    /**
+     * @param  array<string, string|null>  $settings
+     */
+    private function restoreIndexScanSettings(ConnectionInterface $conn, array $settings): void
+    {
+        foreach ($settings as $name => $value) {
+            if ($value !== null && $value !== '') {
+                $conn->select('SELECT set_config(?, ?, true)', [$name, $value]);
+            }
+        }
     }
 
     private function extensionVersion(ConnectionInterface $conn): string

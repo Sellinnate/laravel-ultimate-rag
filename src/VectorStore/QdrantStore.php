@@ -11,6 +11,7 @@ use Sellinnate\RagEngine\Data\RetrievalQuery;
 use Sellinnate\RagEngine\Data\SearchHit;
 use Sellinnate\RagEngine\Data\VectorRecord;
 use Sellinnate\RagEngine\Exceptions\RagException;
+use Sellinnate\RagEngine\Support\MetadataMatcher;
 
 /**
  * Qdrant vector store driver (FR-VS-01, primary). Self-hostable in the EU.
@@ -315,11 +316,7 @@ final class QdrantStore implements VectorStore
      */
     private function listOperand(string $key, string $op, mixed $operand): array
     {
-        if (! is_array($operand)) {
-            throw new RagException("The [{$op}] filter on [{$key}] needs a list.");
-        }
-
-        return $operand;
+        return MetadataMatcher::listOperand($op, $operand);
     }
 
     /**

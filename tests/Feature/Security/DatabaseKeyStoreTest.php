@@ -144,6 +144,11 @@ it('creates keys through the atomic add() so a racing node never replaces a KEK'
             return $this->inner->add($keyId, $material);
         }
 
+        public function mutate(string $keyId, callable $mutator): void
+        {
+            $this->inner->mutate($keyId, $mutator);
+        }
+
         public function forget(string $keyId): void
         {
             $this->inner->forget($keyId);
@@ -213,4 +218,30 @@ it('runs the full ingest/search pipeline on the database key store', function ()
 
     expect(DB::table('rag_kms_keys')->count())->toBe(1)
         ->and(Rag::search('database keys protect')->first()?->content)->toContain('Database-held keys');
+});
+
+it('mutates a key atomically, creating it when absent', function () {
+    $store = dbKeyStore();
+
+    $store->mutate('m', fn (?string $current) => ($current ?? '').'a');
+    $store->mutate('m', fn (?string $current) => ($current ?? '').'b');
+
+    expect($store->get('m'))->toBe('ab')
+        ->and(DB::table('rag_kms_keys')->count())->toBe(1);
+});
+
+it('rotates through mutate() on an atomic store and keeps every version', function () {
+    $kmsA = new LocalKms(dbKeyStore());
+    $kmsB = new LocalKms(dbKeyStore());
+
+    $first = $kmsA->generateDataKey('tenant-rot');
+    $kmsA->rotateKey('tenant-rot');
+    $kmsB->rotateKey('tenant-rot');
+    $kmsB->rotateKey('fresh-tenant');
+
+    $versions = json_decode(dbKeyStore()->get('tenant-rot'), true);
+
+    expect($versions)->toHaveCount(3)
+        ->and($kmsB->unwrapDataKey('tenant-rot', $first->wrapped))->toBe($first->plaintext)
+        ->and(json_decode(dbKeyStore()->get('fresh-tenant'), true))->toHaveCount(1);
 });

@@ -6,6 +6,7 @@ use Sellinnate\RagEngine\Data\RetrievalQuery;
 use Sellinnate\RagEngine\Data\SearchHit;
 use Sellinnate\RagEngine\Data\VectorRecord;
 use Sellinnate\RagEngine\Embedding\EmbeddingService;
+use Sellinnate\RagEngine\Exceptions\EncryptionException;
 use Sellinnate\RagEngine\Facades\Rag;
 use Sellinnate\RagEngine\Managers\VectorStoreManager;
 use Sellinnate\RagEngine\Models\Chunk;
@@ -61,7 +62,9 @@ it('still stores plaintext when explicitly enabled', function () {
 
     ingestText('Plain payload text for legacy stores.');
 
-    foreach (rawStoreHits() as $hit) {
+    $hits = rawStoreHits();
+    expect($hits)->not->toBeEmpty();
+    foreach ($hits as $hit) {
         expect($hit->content)->toContain('Plain payload text');
     }
 });
@@ -71,7 +74,9 @@ it('stores plaintext by default when encryption is disabled', function () {
 
     ingestText('Unencrypted deployment payload.');
 
-    foreach (rawStoreHits() as $hit) {
+    $hits = rawStoreHits();
+    expect($hits)->not->toBeEmpty();
+    foreach ($hits as $hit) {
         expect($hit->content)->toContain('Unencrypted deployment');
     }
 });
@@ -82,7 +87,9 @@ it('omits plaintext when explicitly disabled even without encryption', function 
 
     ingestText('Hidden anyway.');
 
-    foreach (rawStoreHits() as $hit) {
+    $hits = rawStoreHits();
+    expect($hits)->not->toBeEmpty();
+    foreach ($hits as $hit) {
         expect($hit->metadata)->not->toHaveKey('content');
     }
 
@@ -164,15 +171,28 @@ it('never hydrates content from another tenant', function () {
     expect($hits)->toBe([]);
 });
 
-it('hydrates from a plaintext chunk row and skips a malformed encrypted one', function () {
-    ingestText('Alpha chunk text.');
-    ingestText('Beta chunk text.');
+it('hydrates from a plaintext chunk row and skips malformed encrypted ones', function () {
+    $alpha = ingestText('Alpha chunk text.');
+    $beta = ingestText('Beta chunk text.');
+    $gamma = ingestText('Gamma chunk text.');
+    $delta = ingestText('Delta chunk text.');
 
-    $chunks = Chunk::query()->orderBy('created_at')->get();
-    $chunks[0]->forceFill(['encrypted_content' => null, 'content' => 'Alpha plaintext row.'])->save();
-    $chunks[1]->forceFill(['encrypted_content' => '"not-an-object"'])->save();
+    $set = static fn (string $documentId, array $values) => Chunk::query()->where('document_id', $documentId)->update($values);
+    $set($alpha, ['encrypted_content' => null, 'content' => 'Alpha plaintext row.']);
+    $set($beta, ['encrypted_content' => '"not-an-object"']);
+    $set($gamma, ['encrypted_content' => '{broken json']);
+    $set($delta, ['encrypted_content' => json_encode(['ciphertext' => 'x'])]);
 
     $contents = array_map(static fn (SearchHit $h) => $h->content, Rag::search('chunk text')->topK(5)->get());
 
     expect($contents)->toBe(['Alpha plaintext row.']);
 });
+
+it('does not suppress decryption failures while hydrating', function () {
+    $document = ingestText('Undecryptable chunk.');
+    Chunk::query()->where('document_id', $document)->update([
+        'encrypted_content' => json_encode(['ciphertext' => base64_encode(random_bytes(40)), 'wrapped_dek' => base64_encode(random_bytes(60)), 'key_id' => 'default']),
+    ]);
+
+    Rag::search('undecryptable chunk')->get();
+})->throws(EncryptionException::class);

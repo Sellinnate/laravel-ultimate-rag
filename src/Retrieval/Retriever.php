@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Sellinnate\RagEngine\Retrieval;
 
+use JsonException;
 use Sellinnate\RagEngine\Contracts\Tokenizer;
 use Sellinnate\RagEngine\Contracts\VectorStore;
 use Sellinnate\RagEngine\Data\EncryptedPayload;
@@ -144,13 +145,21 @@ final class Retriever
             return $chunk->content;
         }
 
-        $payload = json_decode($chunk->encrypted_content, true, flags: JSON_THROW_ON_ERROR);
+        try {
+            $payload = json_decode($chunk->encrypted_content, true, flags: JSON_THROW_ON_ERROR);
+        } catch (JsonException) {
+            return null; // malformed row: discard the hit, keep the search going
+        }
 
-        if (! is_array($payload)) {
+        if (! is_array($payload)
+            || ! is_string($payload['ciphertext'] ?? null)
+            || ! is_string($payload['wrapped_dek'] ?? null)
+            || ! is_string($payload['key_id'] ?? null)) {
             return null;
         }
 
-        return $this->encrypter->decrypt(EncryptedPayload::fromArray($payload));
+        // Decryption failures (e.g. a shredded key) are NOT suppressed.
+        return $this->encrypter->decrypt(new EncryptedPayload($payload['ciphertext'], $payload['wrapped_dek'], $payload['key_id']));
     }
 
     /**

@@ -82,8 +82,8 @@ final class PgVectorFilterCompiler
         return match ($operator) {
             'eq' => $this->equals($key, $value),
             'neq' => 'NOT '.$this->equals($key, $value),
-            'in' => is_array($value) ? $this->in($key, array_values($value)) : 'FALSE',
-            'nin' => is_array($value) ? 'NOT '.$this->in($key, array_values($value)) : 'FALSE',
+            'in' => $this->in($key, array_values(MetadataMatcher::listOperand($operator, $value))),
+            'nin' => 'NOT '.$this->in($key, array_values(MetadataMatcher::listOperand($operator, $value))),
             'gt', 'gte', 'lt', 'lte' => $this->range($key, self::RANGE_OPERATORS[$operator], $value),
             default => throw new RagException("Unsupported filter operator [{$operator}]."),
         };

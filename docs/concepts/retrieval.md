@@ -86,7 +86,8 @@ filters look at its **elements**:
 | `->where('scopes', ['eq' => ['hr', 'finance']])` | matches only this exact list |
 
 Several conditions (several `where()` calls, or one `filter([...])`) must **all**
-match. An unknown operator throws a `RagException`. An empty `in` list matches
+match. An unknown operator, or `in`/`nin` with something other than a list,
+throws a `RagException`. An empty `in` list matches
 nothing, so a user with no allowed scopes gets no results.
 
 ::: callout info "Qdrant range filters are numeric"

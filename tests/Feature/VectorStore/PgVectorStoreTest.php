@@ -204,8 +204,6 @@ describe('native pgvector (requires Postgres + vector extension)', function () {
             [['tag' => ['in' => ['x', 'y']]], ['a', 'b']],
             [['tag' => ['nin' => ['x']]], ['b', 'c', 'd']],
             [['tag' => ['nin' => ['x', null]]], ['b']],
-            [['tag' => ['in' => 'x']], []],
-            [['tag' => ['nin' => 'x']], []],
             // List-valued metadata matches on its elements.
             [['tags' => 'q'], ['a', 'b']],
             [['tags' => 'hr'], ['b']],
@@ -226,6 +224,22 @@ describe('native pgvector (requires Postgres + vector extension)', function () {
             expect($ids($this->store, $filters))->toBe($expected, "pgvector {$label}")
                 ->and($ids($memory, $filters))->toBe($expected, "memory {$label}");
         }
+    });
+
+    it('restores the caller\'s index-scan settings when searching inside a transaction', function () {
+        $this->store->upsert('docs', [new VectorRecord('a', [1.0, 0.0, 0.0], ['tenant_id' => 't1', 'scope' => 'x'])]);
+        $conn = app(ConnectionResolverInterface::class)->connection('pgvector_test');
+
+        $conn->transaction(function () use ($conn) {
+            $conn->statement('SET LOCAL hnsw.ef_search = 77');
+            $conn->statement('SET LOCAL enable_indexscan = on');
+
+            $hits = $this->store->search('docs', [1.0, 0.0, 0.0], new RetrievalQuery('q', topK: 50, filters: ['scope' => 'x'], tenantId: 't1'));
+
+            expect($hits)->toHaveCount(1)
+                ->and($conn->selectOne("SELECT current_setting('hnsw.ef_search') AS v")->v)->toBe('77')
+                ->and($conn->selectOne("SELECT current_setting('enable_indexscan') AS v")->v)->toBe('on');
+        });
     });
 
     it('treats hostile filter keys and values as data, never SQL', function () {

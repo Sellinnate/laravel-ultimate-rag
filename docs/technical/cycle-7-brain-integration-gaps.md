@@ -145,6 +145,15 @@ crypto-shred path already deleted by tenant. `rag:reconcile --prune`
   `DELETE … WHERE NOT EXISTS (chunk)`, so a record committed together with its
   chunk during the prune is never removed.
 
+- **CodeRabbit round.** Atomic KEK rotation: `AtomicKeyStore::mutate()`,
+  implemented by `DatabaseKeyStore` with `lockForUpdate` in a transaction
+  retried on deadlock. Hydration discards malformed chunk JSON without
+  hiding decryption failures. `in`/`nin` with a non-list operand now throws on
+  every store (`MetadataMatcher::listOperand()`). `PgVectorStore` restores
+  the caller's `hnsw.ef_search` / `enable_indexscan` / iterative-scan settings
+  (`current_setting` → `set_config(…, true)`), because `SET LOCAL` would
+  otherwise leak into an outer transaction. Filter-key docs made precise.
+
 ## G — Images never reached OCR
 
 No parser claimed `image/*`, so images failed as unsupported even with OCR
