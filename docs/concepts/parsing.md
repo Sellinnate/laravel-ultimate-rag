@@ -40,17 +40,71 @@ $parsed->language;   // detected language (filled in during preprocessing)
 |---|---|---|
 | Plain text | `text/plain` | Pass-through. |
 | Markdown | `text/markdown` | Heading hierarchy becomes sections. |
-| HTML | `text/html` | `<script>`/`<style>` stripped; DOM sanitized; no network access. |
+| HTML | `text/html` | `<script>`/`<style>` stripped; DOM sanitized; no network access. Paragraphs, headings, lists and table rows become paragraphs/lines (cells are tab-separated). |
 | XML | `application/xml` | Hardened against XXE attacks (see below). |
 | CSV / TSV | `text/csv` | Each cell paired with its column header, so rows stay meaningful. |
 | JSON | `application/json` | Flattened to readable `path: value` lines. |
 | DOCX | `application/vnd…wordprocessingml…` | Word files, read via PHP's `ZipArchive` — no external tools. |
-| PDF | `application/pdf` | Text-based PDFs, via the optional `smalot/pdfparser` package. |
+| PDF | `application/pdf` | Text-based PDFs, via the optional `smalot/pdfparser` package. Running headers/footers and wrapped lines are cleaned up — see [PDF clean-up](#pdf-cleanup). |
 | Images | `image/png`, `image/jpeg`, `image/webp`, `image/tiff` | Read by the configured **OCR** engine. Unsupported while OCR is `null` (the default). See [Images & OCR](#images-ocr). |
 
 ::: callout tip "PDFs are text, not images"
 A PDF parser extracts the *text layer* of a PDF. A **scanned** document (an image
 of text) has no text layer — for those, enable **OCR** (below).
+:::
+
+## PDF clean-up {#pdf-cleanup}
+
+The text inside a PDF is laid out for printing, not for reading by a program.
+Extracted as-is, a 4-page quote gives you:
+
+- the **company footer on every page** (`Sellinnate S.r.l. | Viale Belfiore 55 … P.IVA … 2`),
+  repeated in many chunks and matching every query about the company;
+- **stray symbols** from diagrams on their own line (`→ → →`);
+- a **line break at the end of every printed line**, even mid-sentence.
+
+The PDF parser cleans this up before anything else happens:
+
+| Step | What it does | Setting (env var) | Default |
+|---|---|---|---|
+| Repeated lines | Drops a line near the top or bottom of the pages (within `repeated_line_edge_lines` lines) that repeats on at least `repeated_line_threshold` of the pages, and on 2 pages or more. Digits and spacing are ignored when comparing, so `Page 2 of 4` matches `Page 3 of 4`. Only for PDFs with at least `repeated_line_min_pages` pages. | `strip_repeated_lines` (`RAG_PDF_STRIP_REPEATED_LINES`) | on |
+| | Share of pages a line must appear on (`0 < x ≤ 1`). | `repeated_line_threshold` (`RAG_PDF_REPEATED_LINE_THRESHOLD`) | `0.6` |
+| | Minimum page count (never below 2). | `repeated_line_min_pages` (`RAG_PDF_REPEATED_LINE_MIN_PAGES`) | `2` |
+| | How many lines at the top and bottom of a page count as header/footer (`≥ 1`). | `repeated_line_edge_lines` (`RAG_PDF_REPEATED_LINE_EDGE_LINES`) | `3` |
+| Symbol-only lines | Drops lines made only of arrows, bullets, box-drawing or geometric symbols (`→ → →`, `• • •`, `———`). Symbols inside real text are kept. | `strip_symbol_lines` (`RAG_PDF_STRIP_SYMBOL_LINES`) | on |
+| Wrapped lines | Joins a line that does not end a sentence (no `.` `!` `?` `:` `;`) to the next line when that one starts in lowercase — also across a page break. Headings, table rows and list items stay on their own lines. Pages are separated by a blank line. | `join_wrapped_lines` (`RAG_PDF_JOIN_WRAPPED_LINES`) | on |
+
+All settings live under `rag-engine.parsing.pdf`. A threshold outside `(0, 1]`
+or `repeated_line_edge_lines < 1` throws at boot instead of silently stripping
+content.
+
+Before and after, for one page of that quote:
+
+```text
+Sellinnate S.r.l. | Viale Belfiore 55, 50144 Firenze | P.IVA: IT07104820480	2
+Analisi dei processi e configurazione: sessione di lavoro con il vostro team,
+mappatura del flusso ordine  merce  consegna  fattura,
+→ → →
+parametrizzazione di ruoli, stati, listini
+€ 1.200,00
+```
+
+```text
+Analisi dei processi e configurazione: sessione di lavoro con il vostro team, mappatura del flusso ordine merce consegna fattura, parametrizzazione di ruoli, stati, listini
+€ 1.200,00
+```
+
+::: callout info "Headings in PDFs are not detected"
+A PDF's text layer has no reliable "this is a heading" marker, and guessing from
+line shape mislabels lines like `Data: 17 settembre 2026` or `€ 3.900,00`. So PDF
+pages are not split into heading sections: headings stay in the text on their
+own line, and the chunker keeps them next to the text that follows. For
+section-aware headers, convert the document to Markdown or HTML first.
+:::
+
+::: callout warning "Changing these settings changes the indexed text"
+Run `php artisan rag:reindex {tenant}` afterwards so existing documents are
+re-parsed.
 :::
 
 ## Scanned PDFs, images & OCR {#images-ocr}
@@ -159,6 +213,11 @@ Parsers keep a document's logical structure as a list of **`DocumentSection`**
 objects — headings with their level, individual table rows, PDF pages. This is
 what lets structure-aware chunkers (like the Markdown chunker) split on real
 boundaries instead of mid-sentence. See **[Chunking](/concepts/chunking)**.
+
+The flat `text` keeps the structure too: paragraphs are separated by a blank
+line and meaningful line breaks (headings, list items, table rows) are kept.
+Preprocessing leaves them in place and the chunkers split on them first, then
+between sentences.
 
 ## Security hardening
 

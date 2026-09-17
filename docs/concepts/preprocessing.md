@@ -27,7 +27,7 @@ Stages run in the order listed under `rag-engine.preprocessing.stages`:
 
 | Stage | What it does |
 |---|---|
-| **text-cleaner** | Normalizes to UTF-8, collapses runs of whitespace, strips control and zero-width characters. |
+| **text-cleaner** | Normalizes to UTF-8 and line endings, collapses runs of spaces, trims line ends, strips control and zero-width characters. **Keeps line breaks** and turns several blank lines into one paragraph break, so chunkers can still split on paragraphs. |
 | **language-detector** | Detects the language (IT / DE / EN) by stop-word frequency; stored on the document. |
 | **pii-redactor** | Finds and redacts personal data. **On by default.** |
 
@@ -47,7 +47,8 @@ The redactor detects and removes these types:
 
 ::: callout warning "Redaction covers the WHOLE document, not just the body"
 PII is scrubbed from the flat text **and** from section content, section
-metadata, and the document's metadata tree. So a card number hiding in a CSV
+metadata, and the document's metadata tree — including the document `title`
+used for [contextual headers](/concepts/chunking#contextual-headers). So a card number hiding in a CSV
 cell, a JSON field, or a PDF page section gets caught too — not just prose.
 :::
 

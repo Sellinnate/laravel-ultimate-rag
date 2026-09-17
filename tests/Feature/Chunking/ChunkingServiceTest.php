@@ -47,3 +47,36 @@ it('can disable contextual headers via config', function () {
 it('resolves chunkers through the manager (FR-CH-10)', function () {
     expect(app(ChunkerManager::class)->driver('sentence')->name())->toBe('sentence');
 });
+
+it('passes configured abbreviations to the sentence-aware chunkers', function () {
+    config()->set('rag-engine.chunking.abbreviations', ['Rep', 42]);
+    config()->set('rag-engine.chunkers.sentence', ['driver' => 'sentence', 'abbreviations' => ['Cfm.']]);
+    $manager = app(ChunkerManager::class)->forgetDrivers();
+
+    $contents = fn (string $driver, string $text): array => array_map(
+        fn ($chunk) => $chunk->content,
+        $manager->driver($driver)->chunk(new ParsedDocument($text, 'text/plain'), ['size' => 20, 'overlap' => 0]),
+    );
+
+    // A known abbreviation keeps the 30-char sentence whole, so it is cut
+    // between words; otherwise it is two sentences that each fit.
+    foreach (['sentence', 'recursive', 'markdown'] as $driver) {
+        expect($contents($driver, 'Vedi Rep. Allegato numero uno.'))->toBe(['Vedi Rep. Allegato', 'numero uno.']);
+    }
+
+    // Per-connection abbreviations only apply to that connection.
+    expect($contents('sentence', 'Vedi Cfm. Allegato numero due.'))->toBe(['Vedi Cfm. Allegato', 'numero due.'])
+        ->and($contents('recursive', 'Vedi Cfm. Allegato numero due.'))->toBe(['Vedi Cfm.', 'Allegato numero due.']);
+});
+
+it('reads chunk size and overlap from config', function () {
+    config()->set('rag-engine.chunking.chunk_size', 41);
+    config()->set('rag-engine.chunking.chunk_overlap', 0);
+
+    $chunks = $this->service->chunk(new ParsedDocument(str_repeat('Una frase breve qui. ', 10), 'text/plain'));
+
+    expect($chunks)->toHaveCount(5);
+    foreach ($chunks as $chunk) {
+        expect($chunk->content)->toBe('Una frase breve qui. Una frase breve qui.');
+    }
+});

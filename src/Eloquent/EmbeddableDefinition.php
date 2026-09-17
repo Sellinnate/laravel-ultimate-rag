@@ -30,6 +30,8 @@ final class EmbeddableDefinition
 
     private ?string $documentKey = null;
 
+    private ?string $title = null;
+
     /** @var array<string, mixed> */
     private array $options = [];
 
@@ -128,6 +130,21 @@ final class EmbeddableDefinition
     }
 
     /**
+     * The document's human-readable title (e.g. "Quote — Livio Cheese"). It
+     * becomes the document's `title` metadata and heads every chunk's
+     * contextual header (`Document: <title>`), so chunks that never mention
+     * it are still retrieved by a query about it. Takes precedence over a
+     * `title` passed to {@see metadata()}; null/blank values are ignored.
+     */
+    public function title(string|int|float|null $title): self
+    {
+        $text = $this->stringify($title);
+        $this->title = $text === '' ? null : (string) preg_replace('/\s+/u', ' ', $text);
+
+        return $this;
+    }
+
+    /**
      * Override the logical key used to group/supersede versions of this model's
      * document. Defaults to the model's stable `type:id` identity.
      */
@@ -172,6 +189,21 @@ final class EmbeddableDefinition
     public function metadataArray(): array
     {
         return $this->metadata;
+    }
+
+    /**
+     * The declared title: {@see title()}, else a non-blank string `title`
+     * given to {@see metadata()}.
+     */
+    public function titleValue(): ?string
+    {
+        if ($this->title !== null) {
+            return $this->title;
+        }
+
+        $fromMetadata = $this->metadata['title'] ?? null;
+
+        return is_string($fromMetadata) && trim($fromMetadata) !== '' ? trim($fromMetadata) : null;
     }
 
     public function documentKeyOverride(): ?string

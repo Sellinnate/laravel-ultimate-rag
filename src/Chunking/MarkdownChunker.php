@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Sellinnate\RagEngine\Chunking;
 
+use Sellinnate\RagEngine\Contracts\Tokenizer;
 use Sellinnate\RagEngine\Data\ParsedDocument;
 
 /**
@@ -14,6 +15,11 @@ use Sellinnate\RagEngine\Data\ParsedDocument;
  */
 final class MarkdownChunker extends AbstractChunker
 {
+    public function __construct(Tokenizer $tokenizer, private readonly ?SentenceSplitter $sentences = null)
+    {
+        parent::__construct($tokenizer);
+    }
+
     public function chunk(ParsedDocument $document, array $options = []): array
     {
         $size = max(1, (int) $this->option($options, 'size', 1000));
@@ -26,7 +32,7 @@ final class MarkdownChunker extends AbstractChunker
             return [];
         }
 
-        $recursive = new RecursiveCharacterChunker($this->tokenizer);
+        $recursive = new RecursiveCharacterChunker($this->tokenizer, $this->sentences);
         $chunks = [];
         $index = 0;
         $offset = 0;

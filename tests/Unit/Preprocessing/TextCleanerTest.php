@@ -29,3 +29,7 @@ it('runs as a preprocessing stage on a parsed document', function () {
     expect($this->cleaner->process($doc)->text)->toBe("messy text\n\nhere")
         ->and($this->cleaner->name())->toBe('text-cleaner');
 });
+
+it('keeps line breaks and turns whitespace-only blank lines into one paragraph break', function () {
+    expect($this->cleaner->clean("Titolo  \nRiga uno\n   \n \t \n\nParagrafo"))->toBe("Titolo\nRiga uno\n\nParagrafo");
+});

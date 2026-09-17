@@ -199,9 +199,17 @@ class RagEngineServiceProvider extends PackageServiceProvider
             ];
 
             if (PdfParser::isAvailable()) {
+                $config = $app->make('config');
+
                 $parsers[] = new PdfParser(
                     $app->make(Ocr::class),
-                    (int) $app->make('config')->get('rag-engine.ocr_min_chars', 16),
+                    (int) $config->get('rag-engine.ocr_min_chars', 16),
+                    stripRepeatedLines: (bool) $config->get('rag-engine.parsing.pdf.strip_repeated_lines', true),
+                    repeatedLineThreshold: (float) $config->get('rag-engine.parsing.pdf.repeated_line_threshold', 0.6),
+                    repeatedLineMinPages: (int) $config->get('rag-engine.parsing.pdf.repeated_line_min_pages', 2),
+                    repeatedLineEdgeLines: (int) $config->get('rag-engine.parsing.pdf.repeated_line_edge_lines', 3),
+                    stripSymbolLines: (bool) $config->get('rag-engine.parsing.pdf.strip_symbol_lines', true),
+                    joinWrappedLines: (bool) $config->get('rag-engine.parsing.pdf.join_wrapped_lines', true),
                 );
             }
 

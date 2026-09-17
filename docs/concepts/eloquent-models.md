@@ -30,6 +30,7 @@ class Post extends Model implements Embeddable
     public function toEmbeddable(): EmbeddableDefinition
     {
         return EmbeddableDefinition::make()
+            ->title($this->title)                      // heads every chunk
             ->add('Title', $this->title)
             ->add('Body', $this->body)
             ->include($this->author, 'author')        // a related embeddable
@@ -61,6 +62,7 @@ model's embedded representation:
 | `include(?Embeddable $related, ?string $as)` | Compose one related embeddable (recursive). Null is ignored. |
 | `includeMany(iterable $related, ?string $as)` | Compose a collection of related embeddables. |
 | `addFile(string $label, ?string $path, ?string $disk, ?string $mime)` | Embed the **text of an uploaded file** (PDF, DOCX…). See [file fields](#file-fields). |
+| `title(?string $title)` | The document's title. It heads every chunk's [contextual header](#document-title). Null/blank values are ignored. |
 | `metadata(array $meta)` | Metadata stored on the document. Scalar and list-of-scalar values are also copied into **every vector**, so you can [filter on them](#filterable-metadata). |
 | `documentKey(string $key)` | Override the logical key (defaults to the model's `type:id`). |
 | `options(array $opts)` | Per-model chunking/indexing options. |
@@ -69,6 +71,47 @@ model's embedded representation:
 Only the fields you `add()` are embedded — secrets (password hashes, tokens)
 never reach the index or the LLM unless you explicitly put them there.
 :::
+
+## Document title {#document-title}
+
+A model's text is compiled into one document and then cut into chunks. Only the
+first chunk contains the `[Title]` part — the chunk with a quote's prices, for
+example, never names the client. Declare a **title** so every chunk carries it:
+
+```php
+return EmbeddableDefinition::make()
+    ->title("Quote — {$this->client_name}")
+    ->add('Document', $this->name)
+    ->add('Category', $this->category)
+    ->addFile('Content', $this->path, 'local', 'application/pdf');
+```
+
+- The title becomes the document's `title` metadata and each chunk's header:
+  `Document: Quote — Livio Cheese`. The header is added to the text that is
+  **embedded** and keyword-scored, but search results return the clean chunk
+  text (the header is in `$hit->metadata['context_header']`). See
+  **[Contextual headers](/concepts/chunking#contextual-headers)**.
+- A `title` passed to `metadata()` works too; `title()` wins when both are set.
+  Either way the title is also filterable (`where('title', …)`).
+- Whitespace is collapsed, and the title is PII-redacted like the rest of the
+  content.
+- **Changing only the title re-indexes the model** on its next sync, even when
+  its text is unchanged.
+
+The compiled text keeps every label on its own line and every part in its own
+paragraph:
+
+```text
+[Document]
+Quote Livio Cheese
+
+[Category]
+Quote
+
+[Content]
+Preventivo — Gestionale per la distribuzione alimentare
+…
+```
 
 ## Filterable metadata & access scopes {#filterable-metadata}
 

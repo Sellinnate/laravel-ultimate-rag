@@ -8,12 +8,25 @@ use Sellinnate\RagEngine\Data\ParsedDocument;
 use Sellinnate\RagEngine\Data\TextChunk;
 
 /**
- * Contextual chunk headers (FR-CH-08): enriches each chunk with a header that
- * situates it (document title, section heading) so the embedded text carries
- * document/section context, improving retrieval of otherwise ambiguous chunks.
+ * Contextual chunk headers (FR-CH-08): gives each chunk a header that situates
+ * it — `Document: <title> > Section: <heading>` — so a chunk that never names
+ * its document (e.g. the price table of a quote) is still found by a query
+ * about that document.
+ *
+ * The title is the document's `title` metadata (a caller-declared title — see
+ * `IngestionPipeline` — wins over one read from the file), else its filename.
+ *
+ * The header is NOT part of `TextChunk::$content` (which stays the verbatim
+ * source slice returned by search). It is:
+ * - prepended to the text sent to the embedder ({@see TextChunk::embeddableText()});
+ * - stored as the chunk's `context_header` metadata, so hybrid keyword scoring
+ *   and the generation context can use it.
  */
 final class ContextualHeaderEnricher
 {
+    /** Chunk (and vector payload) metadata key holding the header. */
+    public const METADATA_KEY = 'context_header';
+
     /**
      * @param  list<TextChunk>  $chunks
      * @return list<TextChunk>
@@ -34,14 +47,26 @@ final class ContextualHeaderEnricher
                 $parts[] = "Section: {$heading}";
             }
 
-            return $parts === [] ? $chunk : $chunk->withContextHeader(implode(' > ', $parts));
+            if ($parts === []) {
+                return $chunk;
+            }
+
+            $header = implode(' > ', $parts);
+
+            return $chunk->withContextHeader($header)->withMetadata([self::METADATA_KEY => $header]);
         }, $chunks);
     }
 
     private function documentTitle(ParsedDocument $document): ?string
     {
-        $title = $document->metadata['title'] ?? $document->metadata['filename'] ?? null;
+        foreach (['title', 'filename'] as $key) {
+            $value = $document->metadata[$key] ?? null;
 
-        return is_string($title) && $title !== '' ? $title : null;
+            if (is_string($value) && trim($value) !== '') {
+                return trim((string) preg_replace('/\s+/u', ' ', $value));
+            }
+        }
+
+        return null;
     }
 }

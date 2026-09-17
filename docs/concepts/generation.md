@@ -140,6 +140,17 @@ is told to cite `[1]`, `[2]`… and each number maps to a source. Use
 `->contextBudget(2000)` to cap how many tokens of context are sent, so you never
 overflow the model's window.
 
+Each passage is preceded by its [contextual header](/concepts/chunking#contextual-headers)
+when it has one, so the model knows which document a passage comes from:
+
+```text
+[1] (Document: Quote — Livio Cheese)
+Totale imponibile € 8.400,00 …
+
+[2] (Document: Price list 2026 > Section: Support)
+Ore di assistenza € 95,00/ora …
+```
+
 ## Security: untrusted retrieved text
 
 ::: callout warning "Prompt-injection hardening"

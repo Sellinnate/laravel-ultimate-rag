@@ -65,12 +65,18 @@ final class ModelEmbedder
         $force = (bool) ($options['force'] ?? false);
         unset($options['force']);
 
+        // The declared title (EmbeddableDefinition::title()) becomes the
+        // document's `title`, which heads every chunk's contextual header.
+        $declared = $compiled->title !== null
+            ? [...$compiled->metadata, 'title' => $compiled->title]
+            : $compiled->metadata;
+
         $source = new IngestionSource(
             content: $compiled->content,
             mimeType: 'text/plain',
             sourceType: IngestionSource::TYPE_ELOQUENT,
             metadata: [
-                ...$compiled->metadata,
+                ...$declared,
                 'document_key' => $key,
                 'embeddable_type' => $identity['type'],
                 'embeddable_id' => $identity['id'],
@@ -81,7 +87,7 @@ final class ModelEmbedder
                 // identity, so a retrieved vector can be filtered on and traced
                 // back to its model with no extra query. Identity keys win.
                 'rag_vector_metadata' => [
-                    ...self::filterableMetadata($compiled->metadata),
+                    ...self::filterableMetadata($declared),
                     'embeddable_type' => $identity['type'],
                     'embeddable_id' => $identity['id'],
                     'embeddable_key' => $key,
