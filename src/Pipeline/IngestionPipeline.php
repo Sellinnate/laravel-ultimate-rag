@@ -88,7 +88,7 @@ final class IngestionPipeline
      *
      * @return array{filename: ?string, title: ?string}
      */
-    public static function documentContext(Document $document): array
+    private static function documentContext(Document $document): array
     {
         $metadata = $document->metadata ?? [];
         $context = [];

@@ -58,6 +58,9 @@ final class SentenceSplitter
         'nov', 'dec', 'ott', 'dic', 'gen', 'giu', 'lug', 'ago', 'set',
     ];
 
+    /** Bytes looked back for the word before a terminator. */
+    private const WORD_LOOKBACK = 64;
+
     /** @var array<string, true> */
     private readonly array $abbreviations;
 
@@ -165,33 +168,33 @@ final class SentenceSplitter
         $boundaries = [];
 
         // Paragraph breaks (a blank line) are always boundaries.
-        preg_match_all('/\n[ \t]*\n\s*/u', $text, $paragraphs, PREG_OFFSET_CAPTURE);
-        foreach ($paragraphs[0] as [$match, $position]) {
+        $found = preg_match_all('/\n[ \t]*\n\s*/u', $text, $paragraphs, PREG_OFFSET_CAPTURE);
+        foreach ($found ? $paragraphs[0] : [] as [$match, $position]) {
             $boundaries[] = [$position, $position + strlen($match)];
         }
 
         // A line starting with a bullet or a list number starts a new sentence.
-        preg_match_all('/\n(?=[ \t]*(?:[•◦‣▪∙·*\-–—]|\d{1,3}[.)])[ \t])/u', $text, $bullets, PREG_OFFSET_CAPTURE);
-        foreach ($bullets[0] as [, $position]) {
+        $found = preg_match_all('/\n(?=[ \t]*(?:[•◦‣▪∙·*\-–—]|\d{1,3}[.)])[ \t])/u', $text, $bullets, PREG_OFFSET_CAPTURE);
+        foreach ($found ? $bullets[0] : [] as [, $position]) {
             $boundaries[] = [$position, $position + 1];
         }
 
-        // Terminators followed by whitespace, with the word before them and
-        // the first character after them.
-        preg_match_all(
-            '/(\S*?)([.!?…]+)(["\'”’»)\]]*)(\s+)(?=(\S))/u',
+        // Terminator runs followed by whitespace. Runs are matched from their
+        // first character only and possessively, so the scan stays linear on
+        // hostile input (long dot runs, huge tokens without spaces).
+        $found = preg_match_all(
+            '/(?<![.!?…])([.!?…]++)(["\'”’»)\]]*+)(\s++)(?=(\S))/u',
             $text,
             $candidates,
             PREG_SET_ORDER | PREG_OFFSET_CAPTURE,
         );
 
-        foreach ($candidates as $candidate) {
-            [$word, $wordOffset] = $candidate[1];
-            $terminator = $candidate[2][0];
-            [$space, $spaceOffset] = $candidate[4];
-            $next = $candidate[5][0];
+        foreach ($found ? $candidates : [] as $candidate) {
+            [$terminator, $terminatorOffset] = $candidate[1];
+            [$space, $spaceOffset] = $candidate[3];
+            $next = $candidate[4][0];
 
-            if ($this->isBoundary($text, $word, $wordOffset, $terminator, $next)) {
+            if ($this->isBoundary($text, $terminatorOffset, $terminator, $next)) {
                 $boundaries[] = [$spaceOffset, $spaceOffset + strlen($space)];
             }
         }
@@ -201,7 +204,7 @@ final class SentenceSplitter
         return $boundaries;
     }
 
-    private function isBoundary(string $text, string $word, int $wordOffset, string $terminator, string $next): bool
+    private function isBoundary(string $text, int $terminatorOffset, string $terminator, string $next): bool
     {
         // "ecc. e altro", "Wait... what", "Yahoo! is": the sentence goes on.
         if (preg_match('/^\p{Ll}/u', $next) === 1) {
@@ -209,6 +212,13 @@ final class SentenceSplitter
         }
 
         if ($terminator !== '.') {
+            return true;
+        }
+
+        $word = $this->wordBefore($text, $terminatorOffset);
+
+        // Longer than any abbreviation: an ordinary sentence end.
+        if ($word === null) {
             return true;
         }
 
@@ -236,7 +246,7 @@ final class SentenceSplitter
 
         // "1. Primo punto" at the start of a line is a list marker.
         if (preg_match('/^\d{1,3}$/', $bare) === 1) {
-            $bareOffset = $wordOffset + strlen($word) - strlen($bare);
+            $bareOffset = $terminatorOffset - strlen($bare);
             $before = $bareOffset === 0 ? "\n" : $text[$bareOffset - 1];
 
             if ($before === "\n") {
@@ -245,6 +255,26 @@ final class SentenceSplitter
         }
 
         return true;
+    }
+
+    /**
+     * The non-whitespace word ending at $offset, looked up in a bounded window.
+     * Null when the word is longer than the window (never an abbreviation).
+     */
+    private function wordBefore(string $text, int $offset): ?string
+    {
+        $from = max(0, $offset - self::WORD_LOOKBACK);
+        $window = substr($text, $from, $offset - $from);
+
+        // Byte mode on purpose: the window may start inside a character.
+        preg_match('/\S*$/', $window, $match);
+        $word = $match[0] ?? '';
+
+        if ($offset - strlen($word) === $from && $from > 0 && ! ctype_space($text[$from - 1])) {
+            return null;
+        }
+
+        return $word;
     }
 
     private static function normalizeAbbreviation(string $abbreviation): string

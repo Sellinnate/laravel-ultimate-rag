@@ -112,12 +112,12 @@ final class TextPacker
     private function splitOn(string $pattern, string $text, int $start, int $end): array
     {
         $slice = substr($text, $start, $end - $start);
-        preg_match_all($pattern, $slice, $matches, PREG_OFFSET_CAPTURE);
+        $found = preg_match_all($pattern, $slice, $matches, PREG_OFFSET_CAPTURE);
 
         $ranges = [];
         $cursor = 0;
 
-        foreach ($matches[0] as [$separator, $position]) {
+        foreach ($found ? $matches[0] : [] as [$separator, $position]) {
             $ranges[] = [$cursor, $position];
             $cursor = $position + strlen($separator);
         }

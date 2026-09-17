@@ -227,3 +227,10 @@ it('converts byte offsets to character offsets in any order', function () {
         ->and($map->charOffset(4))->toBe(2)
         ->and($map->charOffset(12))->toBe(7);
 });
+
+it('degrades to size-bounded pieces on invalid UTF-8 instead of failing', function (Chunker $chunker) {
+    $text = str_repeat("Frase non valida \xC3 qui. ", 20);
+    $chunks = $chunker->chunk(new ParsedDocument($text, 'text/plain'), ['size' => 100, 'overlap' => 20]);
+
+    expect($chunks)->not->toBeEmpty();
+})->with('sentence-aware chunkers');

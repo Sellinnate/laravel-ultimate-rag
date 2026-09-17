@@ -112,3 +112,29 @@ it('trims ranges and reports blank ones', function () {
     expect(SentenceSplitter::trimRange('  ab  ', 0, 6))->toBe([2, 4])
         ->and(SentenceSplitter::trimRange('    ', 0, 4))->toBeNull();
 });
+
+it('stays linear on hostile input', function (string $text) {
+    $start = hrtime(true);
+    $sentences = (new SentenceSplitter)->split($text.' Fine. Poi.');
+    $elapsedMs = (hrtime(true) - $start) / 1_000_000;
+
+    expect($elapsedMs)->toBeLessThan(1000)
+        ->and(array_slice(array_column($sentences, 'text'), -1))->toBe(['Poi.']);
+})->with([
+    'a huge token without spaces' => [str_repeat('a', 400_000).'.'],
+    'a long run of dots without a space' => [str_repeat('.', 200_000).'x'],
+    'many short dotted tokens' => [str_repeat('a.b.c.', 60_000)],
+]);
+
+it('treats a word longer than any abbreviation as an ordinary sentence end', function () {
+    $long = str_repeat('è', 40); // 80 bytes, beyond the look-back window
+
+    expect(sentencesOf("Parola {$long}. Seconda."))->toBe(["Parola {$long}.", 'Seconda.'])
+        ->and(sentencesOf(str_repeat('x', 70).'. Seconda.'))->toBe([str_repeat('x', 70).'.', 'Seconda.']);
+});
+
+it('does not fail on invalid UTF-8', function () {
+    $text = "Prima frase.\xC3 Seconda frase.\n\nTerza.";
+
+    expect((new SentenceSplitter)->spans($text))->toBe([[0, strlen($text)]]);
+});
