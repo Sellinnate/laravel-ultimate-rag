@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 use Sellinnate\RagEngine\Chunking\FixedSizeChunker;
 use Sellinnate\RagEngine\Chunking\MarkdownChunker;
+use Sellinnate\RagEngine\Chunking\OffsetMap;
 use Sellinnate\RagEngine\Chunking\RecursiveCharacterChunker;
 use Sellinnate\RagEngine\Chunking\SentenceChunker;
 use Sellinnate\RagEngine\Data\ParsedDocument;
@@ -119,4 +120,35 @@ it('MarkdownChunker offsets anchor each chunk in the source, in UTF-8', function
         $last = $chunk->offset;
     }
     expect($chunks[1]->offset)->toBe(mb_strpos($md, 'Perché'));
+});
+
+it('MarkdownChunker offsets point at the right copy of repeated lines', function () {
+    $lines = [];
+    for ($i = 1; $i <= 10; $i++) {
+        $lines[] = 'Riga uguale.';
+        $lines[] = "Numero {$i}.";
+    }
+    $md = "# Sezione\n\n".implode("\n", $lines)."\n\n# Altra\n\nRiga uguale.";
+    $chunks = (new MarkdownChunker($this->tok))->chunk(doc($md), ['size' => 50, 'overlap' => 20]);
+
+    expect(count($chunks))->toBeGreaterThan(4);
+    $last = -1;
+    foreach ($chunks as $chunk) {
+        expect($chunk->offset)->toBeGreaterThan($last);
+        $last = $chunk->offset;
+
+        if (! str_starts_with($chunk->content, 'Sezione') && ! str_starts_with($chunk->content, 'Altra')) {
+            // Not a rebuilt heading chunk: the whole chunk is the slice at its offset.
+            expect(mb_substr($md, $chunk->offset, mb_strlen($chunk->content)))->toBe($chunk->content);
+        }
+    }
+});
+
+it('converts character offsets back to byte offsets', function () {
+    $map = new OffsetMap('aè€😀b');
+
+    expect($map->byteOffset(1))->toBe(1)
+        ->and($map->byteOffset(4))->toBe(10)
+        ->and($map->byteOffset(2))->toBe(3)
+        ->and($map->byteOffset(99))->toBe(11);
 });

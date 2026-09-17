@@ -21,6 +21,37 @@ final class OffsetMap
 
     public function __construct(private readonly string $text) {}
 
+    private int $reverseByte = 0;
+
+    private int $reverseChar = 0;
+
+    /**
+     * The byte offset of a character offset (the inverse of {@see charOffset()}),
+     * also incremental for increasing requests.
+     */
+    public function byteOffset(int $charOffset): int
+    {
+        if ($charOffset < $this->reverseChar) {
+            $this->reverseByte = 0;
+            $this->reverseChar = 0;
+        }
+
+        $length = strlen($this->text);
+
+        while ($this->reverseChar < $charOffset && $this->reverseByte < $length) {
+            $lead = ord($this->text[$this->reverseByte]);
+            $this->reverseByte += match (true) {
+                $lead >= 0xF0 => 4,
+                $lead >= 0xE0 => 3,
+                $lead >= 0xC0 => 2,
+                default => 1,
+            };
+            $this->reverseChar++;
+        }
+
+        return min($this->reverseByte, $length);
+    }
+
     public function charOffset(int $byteOffset): int
     {
         if ($byteOffset < $this->byte) {

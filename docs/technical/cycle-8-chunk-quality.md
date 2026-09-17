@@ -143,9 +143,11 @@ follows.
   the filename; offset/length/split calls pass `'UTF-8'` explicitly; recursive
   and markdown chunks set `offset_unit = char`.
 - `MarkdownChunker` rebuilds sections (`#` markers dropped), so its chunks are
-  not verbatim slices; its offsets are now real UTF-8 anchors: the position
-  where each chunk's first line appears in the source (previously the sum of
-  rebuilt body lengths, which drifted after the first section).
+  not verbatim slices; its offsets are now exact UTF-8 source positions
+  (previously the sum of rebuilt body lengths, which drifted after the first
+  section). Each rebuilt line keeps a segment (body byte → source byte), and
+  sub-split parts are mapped through `OffsetMap::byteOffset()`, so repeated
+  lines never resolve to an earlier copy.
 - The sentence-candidate pattern is possessive and anchored at the start of a
   terminator run, and the preceding word comes from a 64-byte look-back, so the
   scan stays linear on hostile input.
