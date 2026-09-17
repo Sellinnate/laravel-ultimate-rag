@@ -83,6 +83,7 @@ it('MarkdownChunker splits on headings and records the heading (FR-CH-04)', func
 
     expect(count($chunks))->toBe(2)
         ->and($chunks[0]->metadata['heading'])->toBe('Intro')
+        ->and($chunks[0]->metadata['offset_unit'])->toBe('char')
         ->and($chunks[1]->metadata['heading'])->toBe('Details')
         ->and($chunks[0]->content)->toContain('Intro body')
         ->and((new MarkdownChunker($this->tok))->name())->toBe('markdown');

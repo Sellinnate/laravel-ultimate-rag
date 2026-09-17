@@ -200,7 +200,7 @@ it('honours a title passed through metadata() and lets title() win over it', fun
     $document = $both->syncEmbedding();
 
     expect($document->metadata['title'])->toBe('Titolo dichiarato')
-        ->and($document->metadata['rag_vector_metadata']['title'])->toBe('Titolo dichiarato')
+        ->and($document->metadata['rag_vector_metadata'])->not->toHaveKey('title')
         ->and(childChunks($document)[0]->metadata['context_header'])->toBe('Document: Titolo dichiarato');
 });
 
@@ -274,6 +274,22 @@ it('redacts PII inside the title before it reaches the header', function () {
     $header = childChunks($document)[0]->metadata['context_header'];
     expect($header)->toBe('Document: Offerta per [EMAIL]');
     expect(implode(' ', RecordingEmbedder::$texts))->not->toContain('mario.rossi@example.com');
+});
+
+it('never puts an unredacted model title into the vector payload', function () {
+    TitledQuote::create(['name' => 'Offerta per mario.rossi@example.com', 'meta_title' => 'x', 'path' => $this->pdfPath])->syncEmbedding();
+
+    $hits = Rag::search('offerta')->topK(20)->get();
+    expect($hits)->not->toBeEmpty();
+
+    foreach ($hits as $hit) {
+        expect($hit->metadata['title'])->toBe('Offerta per [EMAIL]')
+            ->and($hit->metadata['context_header'])->toBe('Document: Offerta per [EMAIL]')
+            ->and(json_encode($hit->metadata))->not->toContain('mario.rossi');
+    }
+
+    // Still filterable, on the redacted value.
+    expect(Rag::search('offerta')->where('title', 'Offerta per [EMAIL]')->topK(20)->get())->toHaveCount(count($hits));
 });
 
 it('builds headers for existing documents on rag:reindex', function () {

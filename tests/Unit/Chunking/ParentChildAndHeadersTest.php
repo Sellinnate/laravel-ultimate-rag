@@ -80,3 +80,10 @@ it('ContextualHeaderEnricher falls back to the filename when the title is blank'
     expect((new ContextualHeaderEnricher)->enrich([new TextChunk('x', 0)], $doc)[0]->contextHeader)
         ->toBe('Document: preventivo.pdf');
 });
+
+it('ContextualHeaderEnricher skips a title that is not valid UTF-8', function () {
+    $doc = new ParsedDocument('body', 'text/plain', metadata: ['title' => "Bad \xC3 title", 'filename' => 'preventivo.pdf']);
+
+    expect((new ContextualHeaderEnricher)->enrich([new TextChunk('x', 0)], $doc)[0]->contextHeader)
+        ->toBe('Document: preventivo.pdf');
+});

@@ -62,8 +62,11 @@ final class ContextualHeaderEnricher
         foreach (['title', 'filename'] as $key) {
             $value = $document->metadata[$key] ?? null;
 
-            if (is_string($value) && trim($value) !== '') {
-                return trim((string) preg_replace('/\s+/u', ' ', $value));
+            // An unusable value (blank, invalid UTF-8) falls through to the next key.
+            $normalized = is_string($value) ? preg_replace('/\s+/u', ' ', $value) : null;
+
+            if (is_string($normalized) && trim($normalized) !== '') {
+                return trim($normalized);
             }
         }
 

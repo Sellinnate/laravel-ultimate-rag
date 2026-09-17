@@ -15,7 +15,8 @@ namespace Sellinnate\RagEngine\Chunking;
  *   `ecc.`, `Mr.`), a dotted form (`S.r.l.`, `S.p.A.`, `e.g.`, `i.e.`) or a
  *   single-letter initial (`J. Smith`, `N. preventivo`);
  * - the word is a reference abbreviation followed by a number (`art. 5`,
- *   `No. 3`, `pag. 12`);
+ *   `No. 3`, `pag. 12`, `All. 2`), or a capitalised title that is also a
+ *   common word (`On. Rossi`, `Ms. Smith`);
  * - the word is a list number at the start of a line (`1. Primo punto`);
  * - the next character is lowercase (`ecc. e altro`, `Wait... what`).
  *
@@ -36,11 +37,11 @@ final class SentenceSplitter
     public const ABBREVIATIONS = [
         // Italian titles and common forms.
         'sig', 'sigg', 'sigra', 'dott', 'dottssa', 'dr', 'prof', 'profssa', 'ing', 'avv', 'arch', 'geom',
-        'rag', 'egr', 'gent', 'gentmo', 'spett', 'spettle', 'on', 'mons', 'sen',
-        'ecc', 'es', 'ca', 'cfr', 'pagg', 'artt', 'nn', 'tel', 'cell', 'fax', 'rif', 'all', 'sez',
+        'rag', 'egr', 'gent', 'gentmo', 'spett', 'spettle', 'mons', 'sen',
+        'ecc', 'es', 'ca', 'cfr', 'pagg', 'artt', 'nn', 'tel', 'fax', 'rif', 'sez',
         'lett', 'cod', 'prot', 'reg', 'tot', 'fatt', 'mln', 'mld', 'sgg', 'segg', 'ss', 'vd',
         // English.
-        'mr', 'mrs', 'ms', 'mx', 'sr', 'jr', 'st', 'vs', 'etc', 'inc', 'ltd', 'corp', 'approx',
+        'mr', 'mrs', 'mx', 'sr', 'jr', 'st', 'vs', 'etc', 'inc', 'ltd', 'corp', 'approx',
         'dept', 'est', 'govt', 'misc', 'ave', 'blvd', 'mt', 'ft',
         // German.
         'bzw', 'usw', 'evtl', 'ggf', 'inkl', 'zzgl', 'vgl', 'bspw', 'str',
@@ -54,9 +55,17 @@ final class SentenceSplitter
      */
     public const NUMERIC_ABBREVIATIONS = [
         'art', 'pag', 'pp', 'no', 'nos', 'nr', 'num', 'n', 'fig', 'figs', 'vol', 'voll', 'cap',
-        'tab', 'par', 'p', 'jan', 'feb', 'mar', 'apr', 'jun', 'jul', 'aug', 'sep', 'sept', 'oct',
+        'tab', 'par', 'p', 'all', 'cell', 'jan', 'feb', 'mar', 'apr', 'jun', 'jul', 'aug', 'sep', 'sept', 'oct',
         'nov', 'dec', 'ott', 'dic', 'gen', 'giu', 'lug', 'ago', 'set',
     ];
+
+    /**
+     * Titles that are also common words ("go on.", "5 ms."): abbreviations only
+     * when written capitalised (`On. Rossi`, `Ms. Smith`).
+     *
+     * @var list<string>
+     */
+    public const CAPITALISED_ABBREVIATIONS = ['on', 'ms'];
 
     /** Bytes looked back for the word before a terminator. */
     private const WORD_LOOKBACK = 64;
@@ -240,6 +249,10 @@ final class SentenceSplitter
             return false;
         }
 
+        if (in_array($key, self::CAPITALISED_ABBREVIATIONS, true) && preg_match('/^\p{Lu}/u', $bare) === 1) {
+            return false;
+        }
+
         if (isset($this->numericAbbreviations[$key]) && preg_match('/^\d/', $next) === 1) {
             return false;
         }
@@ -279,6 +292,6 @@ final class SentenceSplitter
 
     private static function normalizeAbbreviation(string $abbreviation): string
     {
-        return mb_strtolower(str_replace('.', '', trim($abbreviation)));
+        return mb_strtolower(str_replace('.', '', trim($abbreviation)), 'UTF-8');
     }
 }

@@ -87,7 +87,9 @@ final class ModelEmbedder
                 // identity, so a retrieved vector can be filtered on and traced
                 // back to its model with no extra query. Identity keys win.
                 'rag_vector_metadata' => [
-                    ...self::filterableMetadata($declared),
+                    // The title is left out: chunks carry it PII-redacted, and a
+                    // raw copy here would override that in the vector payload.
+                    ...self::filterableMetadata(array_diff_key($declared, ['title' => true])),
                     'embeddable_type' => $identity['type'],
                     'embeddable_id' => $identity['id'],
                     'embeddable_key' => $key,

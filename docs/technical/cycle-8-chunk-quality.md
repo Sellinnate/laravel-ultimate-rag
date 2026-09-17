@@ -131,6 +131,21 @@ the real quote. PDF pages therefore get no heading sections; headings stay on
 their own line and the sentence splitter keeps them attached to the text that
 follows.
 
+## Review follow-ups
+
+- `all`, `cell` became number-only abbreviations and `on`, `ms` capitalised-only
+  (`CAPITALISED_ABBREVIATIONS`), so "That's all. Next" and "go on. We" split.
+- `ModelEmbedder` keeps `title` out of `rag_vector_metadata`: the propagated
+  metadata is not PII-redacted and would override the redacted chunk `title` in
+  the payload. Title changes are still detected through
+  `Ingestor::INDEXED_METADATA_KEYS`.
+- Header normalisation skips a title that is not valid UTF-8 and falls back to
+  the filename; offset/length/split calls pass `'UTF-8'` explicitly; recursive
+  and markdown chunks set `offset_unit = char`.
+- The sentence-candidate pattern is possessive and anchored at the start of a
+  terminator run, and the preceding word comes from a 64-byte look-back, so the
+  scan stays linear on hostile input.
+
 ## Behaviour changes
 
 - Chunk text is an exact source slice: line/paragraph breaks and sentence
@@ -140,7 +155,8 @@ follows.
 - PDF text: repeated headers/footers and symbol lines removed, wraps joined.
 - HTML text: block structure kept.
 - Generation context lines carry `(Document: …)`.
-- Chunks and vector payloads carry `context_header` (and the declared `title`).
+- Chunks and vector payloads carry `context_header` and the redacted `title`; a
+  model's `metadata(['title' => …])` no longer reaches the payload unredacted.
 - A duplicate ingest whose `title` changed is flagged `pending`; a keyed
   duplicate is also flagged when it drops a previously declared
   `rag_vector_metadata` or `title`.

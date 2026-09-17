@@ -34,6 +34,18 @@ it('keeps a sentence whole across abbreviations, legal forms, numbers, dates and
     'P.IVA label' => 'Fornitore con P.IVA 12345678901 registrata.',
     'single initial' => 'N. preventivo PRV-2026 approvato.',
     'closing quote' => 'Disse "basta così." poi uscì.',
+    'capitalised title On.' => 'Interviene On. Rossi in aula.',
+    'capitalised title Ms.' => 'Ms. Smith approved it.',
+    'attachment reference' => 'Vedi All. 2 del contratto.',
+]);
+
+it('ends a sentence at common words that are also abbreviations', function (string $first) {
+    expect(sentencesOf($first.' Next one.'))->toBe([$first, 'Next one.']);
+})->with([
+    "That's all.",
+    'Please go on.',
+    'It took 5 ms.',
+    'Charge your cell.',
 ]);
 
 it('splits on real sentence ends', function () {
@@ -137,4 +149,17 @@ it('does not fail on invalid UTF-8', function () {
     $text = "Prima frase.\xC3 Seconda frase.\n\nTerza.";
 
     expect((new SentenceSplitter)->spans($text))->toBe([[0, strlen($text)]]);
+});
+
+it('counts offsets in UTF-8 whatever the internal encoding', function () {
+    $previous = mb_internal_encoding();
+    mb_internal_encoding('ISO-8859-1');
+
+    try {
+        $sentences = (new SentenceSplitter)->split('Perché sì. Così è.');
+    } finally {
+        mb_internal_encoding($previous);
+    }
+
+    expect(array_column($sentences, 'offset'))->toBe([0, 11]);
 });

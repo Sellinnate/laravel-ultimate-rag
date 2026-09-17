@@ -92,9 +92,10 @@ return EmbeddableDefinition::make()
   text (the header is in `$hit->metadata['context_header']`). See
   **[Contextual headers](/concepts/chunking#contextual-headers)**.
 - A `title` passed to `metadata()` works too; `title()` wins when both are set.
-  Either way the title is also filterable (`where('title', …)`).
 - Whitespace is collapsed, and the title is PII-redacted like the rest of the
-  content.
+  content. Vectors carry only the redacted title, so you can still filter on it
+  (`where('title', …)`) but a raw e-mail in a title never reaches the vector
+  store.
 - **Changing only the title re-indexes the model** on its next sync, even when
   its text is unchanged.
 

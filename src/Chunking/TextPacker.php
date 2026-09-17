@@ -137,7 +137,7 @@ final class TextPacker
         $ranges = [];
         $cursor = 0;
 
-        foreach (mb_str_split($slice, $size) as $part) {
+        foreach (mb_str_split($slice, $size, 'UTF-8') as $part) {
             $ranges[] = [$cursor, $cursor + strlen($part)];
             $cursor += strlen($part);
         }
@@ -257,6 +257,6 @@ final class TextPacker
 
     private function length(string $text, int $start, int $end): int
     {
-        return $end > $start ? mb_strlen(substr($text, $start, $end - $start)) : 0;
+        return $end > $start ? mb_strlen(substr($text, $start, $end - $start), 'UTF-8') : 0;
     }
 }

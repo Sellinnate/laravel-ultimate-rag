@@ -28,7 +28,7 @@ final class OffsetMap
             $this->char = 0;
         }
 
-        $this->char += mb_strlen(substr($this->text, $this->byte, $byteOffset - $this->byte));
+        $this->char += mb_strlen(substr($this->text, $this->byte, $byteOffset - $this->byte), 'UTF-8');
         $this->byte = $byteOffset;
 
         return $this->char;

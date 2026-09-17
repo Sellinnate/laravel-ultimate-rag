@@ -91,7 +91,8 @@ a space, **except** after:
 | Titles and abbreviations | `Sig.`, `Dott.`, `Dott.ssa`, `Prof.`, `ecc.`, `Mr.`, `Dr.`, `etc.`, `vs.` |
 | Dotted forms and legal forms | `S.r.l.`, `S.p.A.`, `e.g.`, `i.e.`, `P.IVA` |
 | Initials | `J. Smith`, `N. preventivo` |
-| Reference abbreviations before a number | `art. 5`, `No. 3`, `pag. 12` |
+| Reference abbreviations before a number | `art. 5`, `No. 3`, `pag. 12`, `All. 2` |
+| Titles that are also common words, only when capitalised | `On. Rossi`, `Ms. Smith` (but `go on. We` and `5 ms. Then` do split) |
 | A list number at the start of a line | `1. Primo punto` |
 | A lowercase word | `ecc. e altro`, `Wait... what` |
 

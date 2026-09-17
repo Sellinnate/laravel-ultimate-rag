@@ -43,7 +43,7 @@ final class RecursiveCharacterChunker extends AbstractChunker
 
         $chunks = [];
         foreach ($pieces as $index => $piece) {
-            $chunks[] = $this->makeChunk($piece['text'], $index, $piece['offset'], $document->metadata);
+            $chunks[] = $this->makeChunk($piece['text'], $index, $piece['offset'], $document->metadata, ['offset_unit' => 'char']);
         }
 
         return $chunks;

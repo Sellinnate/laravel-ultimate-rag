@@ -73,7 +73,8 @@ it('returns exact source slices with character offsets', function (Chunker $chun
     foreach ($chunks as $chunk) {
         expect(mb_substr($text, $chunk->offset, mb_strlen($chunk->content)))->toBe($chunk->content)
             ->and($chunk->offset)->toBeGreaterThan($previous)
-            ->and($chunk->metadata['offset'])->toBe($chunk->offset);
+            ->and($chunk->metadata['offset'])->toBe($chunk->offset)
+            ->and($chunk->metadata['offset_unit'])->toBe('char');
         $previous = $chunk->offset;
     }
 })->with('sentence-aware chunkers');

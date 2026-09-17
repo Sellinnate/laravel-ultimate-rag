@@ -47,6 +47,7 @@ final class MarkdownChunker extends AbstractChunker
             $extra = array_filter([
                 'heading' => $section['heading'],
                 'heading_level' => $section['level'],
+                'offset_unit' => 'char',
             ], static fn ($v): bool => $v !== null);
 
             if (mb_strlen($body) <= $size) {
